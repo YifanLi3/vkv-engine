@@ -38,14 +38,14 @@ def kv_cache_size_per_token(config: ModelConfig) -> int:
     Example:
         >>> from vkv.config import LLAMA_8B
         >>> kv_cache_size_per_token(LLAMA_8B)
-        131072  # 128 KB
+        131072 bytes => 128 KB
 
     Explanation for Llama-8B:
-        32 layers × 2 (K+V) × 8 heads × 128 dim × 2 bytes(FP16) = 131072
+        32 layers x 2 (K+V) x 8 heads x 128 dim x 2 bytes(FP16) = 131072
     """
-    # TODO: Implement this function.
+
     # Hint: config.element_size gives you bytes per element for the configured dtype.
-    raise NotImplementedError("TODO: Implement kv_cache_size_per_token")
+    return config.num_layers * 2 * config.num_kv_heads * config.head_dim * config.element_size
 
 
 def num_blocks_for_tokens(num_tokens: int, block_size: int) -> int:
@@ -68,8 +68,8 @@ def num_blocks_for_tokens(num_tokens: int, block_size: int) -> int:
         >>> num_blocks_for_tokens(0, 16)
         0
     """
-    # TODO: Implement this function.
-    raise NotImplementedError("TODO: Implement num_blocks_for_tokens")
+
+    return (num_tokens + block_size - 1) // block_size
 
 
 def kv_block_size_bytes(config: ModelConfig, block_size: int) -> int:
@@ -90,9 +90,9 @@ def kv_block_size_bytes(config: ModelConfig, block_size: int) -> int:
         >>> kv_block_size_bytes(LLAMA_8B, 16)
         2097152  # 2 MB
     """
-    # TODO: Implement this function.
+
     # Hint: This is just kv_cache_size_per_token * block_size.
-    raise NotImplementedError("TODO: Implement kv_block_size_bytes")
+    return kv_cache_size_per_token(config) * block_size
 
 
 # =============================================================================
