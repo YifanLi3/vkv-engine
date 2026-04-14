@@ -152,17 +152,20 @@ class Block:
         self.dtype = dtype
         self.device = device
 
-        # TODO: Allocate key_cache and value_cache tensors.
         # Shape: [num_layers, num_kv_heads, block_size, head_dim]
-        self.key_cache: torch.Tensor = None    # TODO: replace None
-        self.value_cache: torch.Tensor = None  # TODO: replace None
+        self.key_cache: torch.Tensor = torch.zeros(
+                            num_layers, num_kv_heads, block_size, head_dim,
+                            dtype=dtype, device=device,
+                        )
+        self.value_cache: torch.Tensor = torch.zeros(
+                            num_layers, num_kv_heads, block_size, head_dim,
+                            dtype=dtype, device=device,
+                        )
 
-        # TODO: Initialize these tracking variables
-        self.num_filled: int = None    # TODO: should start at 0
-        self.ref_count: int = None     # TODO: should start at 1
-        self.last_access: float = None # TODO: should start at 0.0
+        self.num_filled: int = 0
+        self.ref_count: int = 1
+        self.last_access: float = 0.0
 
-        raise NotImplementedError("TODO: Implement Block.__init__")
 
     @property
     def is_full(self) -> bool:
