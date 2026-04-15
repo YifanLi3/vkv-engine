@@ -137,7 +137,6 @@ class Block:
         """
         Initialize a Block and allocate its tensor storage.
 
-        TODO: You need to:
         1. Store all the config parameters as instance attributes
         2. Allocate self.key_cache as a zero tensor with shape:
            [num_layers, num_kv_heads, block_size, head_dim]
@@ -201,11 +200,11 @@ class Block:
             >>> block.write_slot(layer_idx=0, slot_idx=0, key=k, value=v)
             >>> assert torch.equal(block.key_cache[0, :, 0, :], k)
 
-        TODO: Implement this method.
-        Hint: self.key_cache[layer_idx, :, slot_idx, :] = key
-        Don't forget to validate that slot_idx < block_size.
         """
-        raise NotImplementedError("TODO: Implement Block.write_slot")
+        if slot_idx >= self.block_size:
+            raise ValueError(f"slot_idx {slot_idx} >= block_size {self.block_size}")
+        self.key_cache[layer_idx, :, slot_idx, :] = key
+        self.value_cache[layer_idx, :, slot_idx, :] = value
 
     def read_slot(
         self,
@@ -217,19 +216,16 @@ class Block:
 
         Returns:
             (key, value) tuple, each of shape [num_kv_heads, head_dim]
-
-        TODO: Implement this method.
         """
-        raise NotImplementedError("TODO: Implement Block.read_slot")
+        return (self.key_cache[layer_idx, :, slot_idx, :], self.value_cache[layer_idx, :, slot_idx, :])
 
     def clear(self) -> None:
         """
         Clear this block, making it reusable.
         Analogous to nano-vLLM's Block.reset().
 
-        TODO: Reset num_filled to 0.
         """
-        raise NotImplementedError("TODO: Implement Block.clear")
+        self.num_filled: int = 0
 
     def memory_bytes(self) -> int:
         """Total memory used by this block's tensors (both key and value)."""
