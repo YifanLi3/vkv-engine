@@ -57,9 +57,8 @@ class BlockAllocator:
         get reused first, meaning GPU cache lines may still be warm.
         """
         self._num_blocks = num_blocks
-
-        # TODO: Initialize your free list and in-use tracking
-        raise NotImplementedError("TODO: Implement BlockAllocator.__init__")
+        self._free_block_ids = list(num_blocks)
+        self._used_block_ids = set()
 
     def allocate(self, num_blocks: int) -> List[int]:
         """
