@@ -15,6 +15,7 @@ then compose it into BlockManager in Part 4.
 """
 
 from typing import List
+from unittest.signals import removeResult
 
 
 class BlockAllocator:
@@ -57,7 +58,7 @@ class BlockAllocator:
         get reused first, meaning GPU cache lines may still be warm.
         """
         self._num_blocks = num_blocks
-        self._free_block_ids = list(num_blocks)
+        self._free_block_ids = list(range(num_blocks))
         self._used_block_ids = set()
 
     def allocate(self, num_blocks: int) -> List[int]:
@@ -79,7 +80,16 @@ class BlockAllocator:
         3. Add them to the in-use tracking set
         4. Return the list of IDs
         """
-        raise NotImplementedError("TODO: Implement BlockAllocator.allocate")
+        if num_blocks > len(self._free_block_ids):
+            raise ValueError("No enough free blocks")
+
+        result = []
+        for _ in range(num_blocks):
+            block_id = self._free_block_ids.pop()
+            self._used_block_ids.add(block_id)
+            result.append(block_id)
+
+        return result
 
     def free(self, block_ids: List[int]) -> None:
         """
