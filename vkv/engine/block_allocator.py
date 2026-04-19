@@ -80,7 +80,7 @@ class BlockAllocator:
         3. Add them to the in-use tracking set
         4. Return the list of IDs
         """
-        if num_blocks > len(self._free_block_ids):
+        if num_blocks > self.num_free:
             raise ValueError("No enough free blocks")
 
         result = []
@@ -101,28 +101,27 @@ class BlockAllocator:
         Raises:
             ValueError: If any block ID is not currently allocated (double free)
 
-        TODO: Implement this.
         1. For each block_id, check it's in the in-use set, else raise ValueError
         2. Remove from in-use set
         3. Push back onto the free list
         """
-        raise NotImplementedError("TODO: Implement BlockAllocator.free")
+        for ids in block_ids:
+            if ids not in self._used_block_ids:
+                raise ValueError("This block id is already freed")
+            self._used_block_ids.remove(ids)
+            self._free_block_ids.append(ids)
 
     @property
     def num_free(self) -> int:
         """Number of currently free blocks.
-
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement num_free")
+        return len(self._free_block_ids)
 
     @property
     def num_used(self) -> int:
         """Number of currently allocated blocks.
-
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement num_used")
+        return len(self._used_block_ids)
 
     @property
     def total(self) -> int:
