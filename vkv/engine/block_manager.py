@@ -104,22 +104,23 @@ class BlockManager:
 
         self.num_cpu_blocks = cache_config.num_cpu_blocks
 
-        # TODO: Allocate GPU KV cache tensors
         # self.gpu_key_cache: List[torch.Tensor] = [...]   # len = num_layers
         # self.gpu_value_cache: List[torch.Tensor] = [...]
+        self.gpu_key_cache = [torch.zeros(self.num_gpu_blocks, self.model_config.num_kv_heads, 
+                            self.block_size, self.model_config.head_dim) for _ in range(self.num_layers)]
+        self.gpu_value_cache = [torch.zeros(self.num_gpu_blocks, self.model_config.num_kv_heads, 
+                            self.block_size, self.model_config.head_dim) for _ in range(self.num_layers)]
 
-        # TODO: Allocate CPU KV cache tensors (for swap)
-        # self.cpu_key_cache: List[torch.Tensor] = [...]
-        # self.cpu_value_cache: List[torch.Tensor] = [...]
+        self.cpu_key_cache = [torch.zeros(self.num_cpu_blocks, self.model_config.num_kv_heads, 
+                            self.block_size, self.model_config.head_dim) for _ in range(self.num_layers)]
+        self.cpu_value_cache = [torch.zeros(self.num_cpu_blocks, self.model_config.num_kv_heads, 
+                            self.block_size, self.model_config.head_dim) for _ in range(self.num_layers)]
 
-        # TODO: Create BlockAllocators
-        # self.gpu_allocator = BlockAllocator(self.num_gpu_blocks)
-        # self.cpu_allocator = BlockAllocator(self.num_cpu_blocks)
+        self.gpu_allocator = BlockAllocator(self.num_gpu_blocks)
+        self.cpu_allocator = BlockAllocator(self.num_cpu_blocks)
 
-        # TODO: Reference counting
-        # self._ref_counts: Dict[int, int] = {}
+        self._ref_counts: Dict[int, int] = {}
 
-        raise NotImplementedError("TODO: Implement BlockManager.__init__")
 
     # ----- allocation / deallocation (matches nano-vLLM allocate/deallocate) -----
 
