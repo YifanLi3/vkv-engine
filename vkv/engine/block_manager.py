@@ -132,12 +132,14 @@ class BlockManager:
         The difference: nano-vLLM takes a Sequence and computes num_blocks internally;
         we take num_blocks directly (the Sequence layer handles the computation).
 
-        TODO: Implement this.
         1. Call self.gpu_allocator.allocate(num_blocks)
         2. Initialize ref_count to 1 for each allocated block
         3. Return the block IDs
         """
-        raise NotImplementedError("TODO: Implement BlockManager.allocate")
+        block_ids = self.gpu_allocator.allocate(num_blocks)
+        for block_id in block_ids:
+            self._ref_counts[block_id] = 1
+        return block_ids
 
     def free(self, block_ids: List[int]) -> None:
         """
@@ -150,12 +152,15 @@ class BlockManager:
                 if block.ref_count == 0:
                     self._deallocate_block(block_id)
 
-        TODO: Implement this.
         For each block_id:
             ref_count -= 1
             if ref_count == 0 → actually free via gpu_allocator
         """
-        raise NotImplementedError("TODO: Implement BlockManager.free")
+        for block_id in block_ids:
+            self._ref_counts[block_id] -= 1
+            if self._ref_counts[block_id] == 0:
+                del self._ref_counts[block_id]
+                self.gpu_allocator.free([block_id])
 
     def inc_ref(self, block_id: int) -> None:
         """Increment reference count for a block (for prefix sharing).
@@ -197,10 +202,9 @@ class BlockManager:
             key:       Key tensor, shape [num_kv_heads, head_dim]
             value:     Value tensor, shape [num_kv_heads, head_dim]
 
-        TODO: Implement this.
-        Hint: self.gpu_key_cache[layer_idx][block_id, :, slot_idx, :] = key
         """
-        raise NotImplementedError("TODO: Implement BlockManager.write_kv")
+        self.gpu_key_cache[layer_idx][block_id, :, slot_idx, :] = key
+        self.gpu_value_cache[layer_idx][block_id, :, slot_idx, :] = value
 
     def read_kv(
         self,
@@ -214,9 +218,10 @@ class BlockManager:
         Returns:
             (key, value) tuple, each shape [num_kv_heads, head_dim]
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement BlockManager.read_kv")
+        key = self.gpu_key_cache[layer_idx][block_id, :, slot_idx, :]
+        value = self.gpu_value_cache[layer_idx][block_id, :, slot_idx, :]
+        return (key, value)
 
     def gather_kv(
         self,
