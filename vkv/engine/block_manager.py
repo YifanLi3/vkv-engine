@@ -77,7 +77,6 @@ class BlockManager:
             cache_config: Cache config (block_size, num_gpu_blocks, etc.)
             device: Device for the GPU pool ("cuda" or "cpu" for testing)
 
-        TODO: You need to:
         1. Store configs and compute num_gpu_blocks
         2. Pre-allocate gpu_key_cache and gpu_value_cache:
            - List of tensors, one per layer
@@ -167,9 +166,8 @@ class BlockManager:
 
         In nano-vLLM: block.ref_count += 1 (inside allocate, for cache hits)
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement BlockManager.inc_ref")
+        self._ref_counts[block_id] += 1
 
     def get_ref_count(self, block_id: int) -> int:
         """Get reference count for a block."""
@@ -247,20 +245,39 @@ class BlockManager:
                 keys shape:   [1, num_kv_heads, num_tokens, head_dim]
                 values shape: [1, num_kv_heads, num_tokens, head_dim]
 
-        TODO: Implement this.
         For each block, slice the valid tokens and torch.cat them together.
         The last block may be partial (not all block_size slots filled).
         """
-        raise NotImplementedError("TODO: Implement BlockManager.gather_kv")
+        key_list = []
+        value_list = []
+        number_of_remaining_tokens = num_tokens
+
+        for block_id in block_ids:
+
+            tokens_in_block = min(self.block_size, number_of_remaining_tokens)
+
+            key_cache = self.gpu_key_cache[layer_idx][block_id, :, :tokens_in_block, :]
+            value_cache = self.gpu_value_cache[layer_idx][block_id, :, :tokens_in_block, :]
+
+            key_list.append(key_cache)
+            value_list.append(value_cache)
+
+            number_of_remaining_tokens -= tokens_in_block
+
+        keys = torch.concat(key_list, dim=1).unsqueeze(0)
+        values = torch.concat(value_list, dim=1).unsqueeze(0)
+
+        return keys, values
 
     def copy_block(self, src_block_id: int, dst_block_id: int) -> None:
         """
         Copy all data from one block to another (for Copy-on-Write).
 
-        TODO: Implement this.
         For each layer: copy key and value caches.
         """
-        raise NotImplementedError("TODO: Implement BlockManager.copy_block")
+        for layer_idx in range(self.num_layers):
+            self.gpu_key_cache[layer_idx][dst_block_id] = self.gpu_key_cache[layer_idx][src_block_id]
+            self.gpu_value_cache[layer_idx][dst_block_id] = self.gpu_value_cache[layer_idx][src_block_id]
 
     # ----- fragmentation (Bonus, Part 8) -----
 
