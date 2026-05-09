@@ -107,6 +107,7 @@ class Sequence:
         8. Set num_cached_tokens = 0
         9. Store sampling_params (use default if None)
         """
+        self.seq_id = next(Sequence._counter)
         raise NotImplementedError("TODO: Implement Sequence.__init__")
 
     def __len__(self) -> int:
