@@ -44,7 +44,6 @@ class BlockAllocator:
         Args:
             num_blocks: Total number of blocks to manage (IDs: 0 to num_blocks-1)
 
-        TODO: You need to:
         1. Store num_blocks
         2. Initialize a data structure containing all block IDs as "free"
         3. Optionally maintain a set of in-use IDs for O(1) double-free detection
@@ -74,7 +73,6 @@ class BlockAllocator:
         Raises:
             ValueError: If not enough free blocks available
 
-        TODO: Implement this.
         1. Check that num_blocks <= self.num_free, else raise ValueError
         2. Pop num_blocks IDs from your free list
         3. Add them to the in-use tracking set

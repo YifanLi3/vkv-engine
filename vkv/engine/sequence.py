@@ -96,7 +96,6 @@ class Sequence:
             block_manager: Reference to BlockManager for allocation
             sampling_params: Generation parameters
 
-        TODO: Implement this.
         1. Assign seq_id from _counter
         2. Set status = WAITING
         3. Copy token_ids
@@ -108,7 +107,14 @@ class Sequence:
         9. Store sampling_params (use default if None)
         """
         self.seq_id = next(Sequence._counter)
-        raise NotImplementedError("TODO: Implement Sequence.__init__")
+        self.status = SequenceStatus.WAITING
+        self.token_ids = list(token_ids)
+        self.block_manager = block_manager
+        self.block_table = []
+        self.num_tokens = len(token_ids)
+        self.num_prompt_tokens = len(token_ids)
+        self.num_cached_tokens = 0
+        self.sampling_params = sampling_params
 
     def __len__(self) -> int:
         """Return total token count. Same as nano-vLLM."""
@@ -155,13 +161,14 @@ class Sequence:
         Corresponds to the allocation logic inside nano-vLLM's
         BlockManager.allocate(seq), but from the Sequence side.
 
-        TODO: Implement this.
         1. Compute how many blocks are needed: num_blocks_for_tokens(num_prompt_tokens, block_size)
         2. Allocate from block_manager
         3. Store block IDs in self.block_table
         4. Set status to RUNNING
         """
-        raise NotImplementedError("TODO: Implement Sequence.allocate")
+        block_ids = self.block_manager.allocate(self.num_blocks)
+        self.block_table.extend(block_ids)
+        self.status = SequenceStatus.RUNNING
 
     def append_token(self, token_id: int) -> Tuple[int, int]:
         """
