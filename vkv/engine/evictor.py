@@ -40,44 +40,38 @@ class LRUEvictor:
     def __init__(self):
         """
         Initialize the LRU evictor.
-
-        TODO: Implement this.
-        Hint: self._entries = OrderedDict()
         """
-        raise NotImplementedError("TODO: Implement LRUEvictor.__init__")
+        self._entries = OrderedDict()
 
     def add(self, request_id: str, block_ids: List[int]) -> None:
         """
         Register a sequence as evictable.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement LRUEvictor.add")
+        self._entries[request_id] = block_ids
+
 
     def remove(self, request_id: str) -> None:
         """
         Remove a sequence from the evictor (e.g., when it finishes).
         Ignore silently if not found.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement LRUEvictor.remove")
+        del self._entries[request_id]
 
     def touch(self, request_id: str) -> None:
         """
         Mark a sequence as recently accessed (move to most-recent end).
 
-        TODO: Implement this.
-        Hint: self._entries.move_to_end(request_id)
         """
-        raise NotImplementedError("TODO: Implement LRUEvictor.touch")
+        self._entries.move_to_end(request_id)
 
     def update_blocks(self, request_id: str, block_ids: List[int]) -> None:
         """
         Update the block list for a sequence (e.g., after appending new blocks).
 
-        TODO: Implement this.
         """
+        
         raise NotImplementedError("TODO: Implement LRUEvictor.update_blocks")
 
     def evict(self, num_blocks_needed: int) -> List[Tuple[str, List[int]]]:
