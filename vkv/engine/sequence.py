@@ -198,7 +198,7 @@ class Sequence:
         if slot_idx == 0 and self.num_tokens > 0:
             new_block_id = self.block_manager.allocate(1)
             self.block_table.extend(new_block_id)
-            
+
         self.token_ids.append(token_id)
         self.num_tokens += 1
 
@@ -217,7 +217,6 @@ class Sequence:
         Returns:
             A new Sequence sharing the same blocks.
 
-        TODO: Implement this.
         1. Create new Sequence with same token_ids and block_manager
         2. Copy block_table (same physical block IDs)
         3. Copy num_tokens and num_cached_tokens
@@ -225,7 +224,21 @@ class Sequence:
         5. Set new sequence status to RUNNING
         6. Return the new Sequence
         """
-        raise NotImplementedError("TODO: Implement Sequence.fork")
+        new_sequence = Sequence(
+            token_ids=self.token_ids,
+            block_manager=self.block_manager,
+            sampling_params=self.sampling_params,
+        )
+        new_sequence.block_table = list(self.block_table)
+        new_sequence.num_tokens = self.num_tokens
+        new_sequence.num_cached_tokens = self.num_cached_tokens
+
+        for block_id in new_sequence.block_table:
+            new_sequence.block_manager.inc_ref(block_id)
+
+        new_sequence.status = SequenceStatus.RUNNING
+
+        return new_sequence
 
     def free(self) -> None:
         """
@@ -238,10 +251,12 @@ class Sequence:
                     self._deallocate_block(block_id)
             seq.block_table.clear()
 
-        TODO: Implement this.
         1. Call block_manager.free(self.block_table)
         2. Clear block_table
         3. Set num_tokens = 0
         4. Set status to FINISHED
         """
-        raise NotImplementedError("TODO: Implement Sequence.free")
+        self.block_manager.free(self.block_table)
+        self.block_table.clear()
+        self.num_tokens = 0
+        self.status = SequenceStatus.FINISHED
