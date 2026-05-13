@@ -185,7 +185,6 @@ class Sequence:
         Returns:
             (block_id, slot_idx): Where to write the new token's KV data.
 
-        TODO: Implement this.
         1. Compute slot_idx = num_tokens % block_size
         2. If slot_idx == 0 AND num_tokens > 0 → need new block
            (same logic as nano-vLLM: `len(seq) % block_size == 1` triggers allocation
@@ -194,7 +193,16 @@ class Sequence:
         4. self.num_tokens += 1
         5. Return (block_table[-1], slot_idx)
         """
-        raise NotImplementedError("TODO: Implement Sequence.append_token")
+        slot_idx = self.num_tokens % self.block_manager.block_size
+
+        if slot_idx == 0 and self.num_tokens > 0:
+            new_block_id = self.block_manager.allocate(1)
+            self.block_table.extend(new_block_id)
+            
+        self.token_ids.append(token_id)
+        self.num_tokens += 1
+
+        return (self.block_table[-1], slot_idx)
 
     def fork(self) -> 'Sequence':
         """
