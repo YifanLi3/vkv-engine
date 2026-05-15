@@ -34,10 +34,9 @@ class Swapper:
         Args:
             block_manager: BlockManager that owns both GPU and CPU memory
 
-        TODO: Implement this.
         Store the block_manager reference.
         """
-        raise NotImplementedError("TODO: Implement Swapper.__init__")
+        self.block_manager = block_manager
 
     def swap_out(self, gpu_block_ids: List[int]) -> Dict[int, int]:
         """
@@ -52,7 +51,6 @@ class Swapper:
         Raises:
             ValueError: If not enough free CPU blocks
 
-        TODO: Implement this.
         1. Allocate CPU blocks from block_manager.cpu_allocator
         2. For each (gpu_block, cpu_block) pair, for each layer:
               cpu_key_cache[layer][cpu_block] = gpu_key_cache[layer][gpu_block]
@@ -60,6 +58,7 @@ class Swapper:
         3. Free GPU blocks via block_manager.gpu_allocator
         4. Return mapping
         """
+
         raise NotImplementedError("TODO: Implement Swapper.swap_out")
 
     def swap_in(self, cpu_block_ids: List[int]) -> Dict[int, int]:
