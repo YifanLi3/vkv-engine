@@ -57,7 +57,8 @@ class LRUEvictor:
         Ignore silently if not found.
 
         """
-        del self._entries[request_id]
+        if request_id in self._entries:
+            del self._entries[request_id]
 
     def touch(self, request_id: str) -> None:
         """
@@ -71,8 +72,7 @@ class LRUEvictor:
         Update the block list for a sequence (e.g., after appending new blocks).
 
         """
-        
-        raise NotImplementedError("TODO: Implement LRUEvictor.update_blocks")
+        self._entries[request_id] = block_ids
 
     def evict(self, num_blocks_needed: int) -> List[Tuple[str, List[int]]]:
         """
@@ -86,17 +86,26 @@ class LRUEvictor:
         Raises:
             ValueError: If all evictable sequences combined don't have enough blocks.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement LRUEvictor.evict")
+        freed_blocks = 0
+        evict_seqs = []
+        while freed_blocks < num_blocks_needed:
+            if not self._entries:
+                raise ValueError(f"Cannot free {num_blocks_needed} blocks, not enough evictable")
+
+            request_id, block_ids = self._entries.popitem(last=False)
+            evict_seqs.append((request_id, block_ids))
+            freed_blocks += len(block_ids)
+
+        return evict_seqs
+
 
     @property
     def num_evictable_blocks(self) -> int:
         """Total number of blocks that could be freed by evicting everything.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement num_evictable_blocks")
+        return sum(len(block_ids) for block_ids in self._entries.values())
 
     def __len__(self) -> int:
         """Number of evictable sequences."""
