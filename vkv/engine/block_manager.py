@@ -287,9 +287,15 @@ class BlockManager:
 
         Internal fragmentation = wasted slots / total allocated slots
 
-        TODO: Implement this (Bonus).
         """
-        raise NotImplementedError("TODO: Implement compute_fragmentation (Bonus)")
+        total_slots = 0
+        used_slots = 0
+        for seq in sequences:
+            total_slots += len(seq.block_table) * self.block_size
+            used_slots += seq.num_tokens
+        if total_slots == 0:
+            return 0.0
+        return 1.0 - (used_slots / total_slots)
 
     # ----- stats -----
 
