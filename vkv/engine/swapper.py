@@ -58,8 +58,16 @@ class Swapper:
         3. Free GPU blocks via block_manager.gpu_allocator
         4. Return mapping
         """
-
-        raise NotImplementedError("TODO: Implement Swapper.swap_out")
+        cpu_block_ids = self.block_manager.cpu_allocator.allocate(len(gpu_block_ids))
+        mapping = {}
+        for gpu_block_id, cpu_block_id in zip(gpu_block_ids, cpu_block_ids):
+            for layer in range(self.block_manager.num_layers):
+                self.block_manager.cpu_key_cache[layer][cpu_block_id] = self.block_manager.gpu_key_cache[layer][gpu_block_id]
+                self.block_manager.cpu_value_cache[layer][cpu_block_id] = self.block_manager.gpu_value_cache[layer][gpu_block_id]
+            mapping[gpu_block_id] = cpu_block_id
+        self.block_manager.gpu_allocator.free(gpu_block_ids)
+        return mapping
+        
 
     def swap_in(self, cpu_block_ids: List[int]) -> Dict[int, int]:
         """
@@ -71,10 +79,17 @@ class Swapper:
         Returns:
             Mapping of cpu_block_id → gpu_block_id
 
-        TODO: Implement this.
         Mirror of swap_out.
         """
-        raise NotImplementedError("TODO: Implement Swapper.swap_in")
+        gpu_block_ids = self.block_manager.gpu_allocator.allocate(len(cpu_block_ids))
+        mapping = {}
+        for gpu_block_id, cpu_block_id in zip(gpu_block_ids, cpu_block_ids):
+            for layer in range(self.block_manager.num_layers):
+                self.block_manager.gpu_key_cache[layer][gpu_block_id] = self.block_manager.cpu_key_cache[layer][cpu_block_id]
+                self.block_manager.gpu_value_cache[layer][gpu_block_id] = self.block_manager.cpu_value_cache[layer][cpu_block_id]
+            mapping[cpu_block_id] = gpu_block_id
+        self.block_manager.cpu_allocator.free(cpu_block_ids)
+        return mapping
 
     def swap_out_single(self, gpu_block_id: int) -> int:
         """Convenience: swap out a single block."""
