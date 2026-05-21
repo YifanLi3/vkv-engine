@@ -44,7 +44,6 @@ class SchedulerConfig:
         chunk_size: Max tokens per prefill chunk when chunked prefill is enabled.
         eos_token_id: End-of-sequence token ID.
 
-    TODO: No code to write — this is provided. Read and understand the fields.
     """
     max_num_seqs: int = 256
     max_num_batched_tokens: int = 4096
@@ -69,7 +68,6 @@ class SchedulerOutput:
         swapped_in_seqs: Sequences swapped back from CPU this step.
         num_batched_tokens: Total tokens in this batch.
 
-    TODO: No code to write — this is provided.
     """
     scheduled_seqs: List[Sequence] = field(default_factory=list)
     is_prefill: bool = False
@@ -116,13 +114,20 @@ class Scheduler:
             block_manager: BlockManager from Phase 1
             config: Scheduler configuration
 
-        TODO: Implement this.
         1. Store block_manager and config (use default SchedulerConfig if None)
         2. Initialize three queues: waiting, running, swapped
         3. Create LRUEvictor instance
         4. Create Swapper instance (for swap mode)
         """
-        raise NotImplementedError("TODO: Implement Scheduler.__init__")
+        self.block_manager = block_manager
+        self.config = config
+
+        self.waiting: deque[Sequence] = deque()
+        self.running: deque[Sequence] = deque()
+        self.swapped: deque[Sequence] = deque()
+
+        self.evictor = LRUEvictor()
+        self.swapper = Swapper(block_manager)
 
     def add(self, seq: Sequence) -> None:
         """
@@ -177,9 +182,34 @@ class Scheduler:
         Returns:
             List of sequences to prefill this step.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement Scheduler._schedule_prefill")
+        num_seqs = 0
+        num_tokens = 0
+        scheduled = []
+
+        while self.waiting:
+            seq = self.waiting[0]
+            if num_seqs + 1 > self.config.max_num_seqs:
+                break
+            if num_tokens + len(seq) > self.config.max_num_batched_tokens:
+                break
+
+            needed_blocks = num_blocks_for_tokens(len(seq), self.block_manager.block_size)
+            if not self.block_manager.can_allocate(needed_blocks):
+                break
+            
+            self.waiting.popleft()
+            seq.allocate()
+            self.running.append(seq)
+            scheduled.append(seq)
+            self.evictor.add(str(seq.seq_id), seq.block_table)
+
+            num_seqs += 1
+            num_tokens += len(seq)
+
+        return scheduled
+
+
 
     # ---- Part 3: Decode scheduling + Preemption ----
 
