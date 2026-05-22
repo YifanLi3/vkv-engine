@@ -134,19 +134,20 @@ class Scheduler:
         Add a new sequence to the waiting queue.
         Same as nano-vLLM's Scheduler.add().
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement Scheduler.add")
+        self.waiting.append(seq)
 
     def is_finished(self) -> bool:
         """
         Check if all sequences are done.
         Same as nano-vLLM: not self.waiting and not self.running
 
-        TODO: Implement this.
         Also check self.swapped queue (nano-vLLM doesn't have this).
         """
-        raise NotImplementedError("TODO: Implement Scheduler.is_finished")
+        if not self.waiting and not self.running and not self.swapped:
+            return True
+        else:
+            return False
 
     # ---- Part 2: Prefill scheduling ----
 
@@ -208,8 +209,6 @@ class Scheduler:
             num_tokens += len(seq)
 
         return scheduled
-
-
 
     # ---- Part 3: Decode scheduling + Preemption ----
 
@@ -309,10 +308,18 @@ class Scheduler:
         Returns:
             SchedulerOutput with scheduled sequences and metadata.
 
-        TODO: Implement this.
         Wire together _try_swap_in, _schedule_prefill, _schedule_decode.
         """
-        raise NotImplementedError("TODO: Implement Scheduler.schedule")
+        list_of_prefill_seq = self._schedule_prefill()
+        if list_of_prefill_seq:
+            return SchedulerOutput(
+                scheduled_seqs=list_of_prefill_seq,
+                is_prefill=True,
+                preempted_seqs=[],
+                swapped_in_seqs=[],
+                num_batched_tokens=sum(s.num_tokens for s in list_of_prefill_seq)
+            )
+
 
     # ---- Part 4: Postprocess ----
 
