@@ -225,9 +225,11 @@ class Scheduler:
         Note: nano-vLLM checks `== 1` because it calls append_token BEFORE
         can_append. We check `== 0` because we check BEFORE appending.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement Scheduler._can_append")
+        if seq.num_tokens % self.block_manager.block_size == 0:
+            return self.block_manager.gpu_allocator.has_free(1)
+        else:
+            return True
 
     def preempt(self, seq: Sequence) -> None:
         """
