@@ -246,10 +246,17 @@ class Scheduler:
             seq.status = SWAPPED
             self.swapped.append(seq)
 
-        TODO: Implement this.
         Check self.config.preemption_mode to decide which path.
         """
-        raise NotImplementedError("TODO: Implement Scheduler.preempt")
+        if self.config.preemption_mode == "recompute":
+            seq.free()
+            seq.status = SequenceStatus.WAITING
+            self.waiting.appendleft(seq)
+        else:
+            mapping = Swapper.swap_out(seq.block_table)
+            seq.block_table = [mapping[gpu_block_id] for gpu_block_id in seq.block_table]
+            seq.status = SequenceStatus.SWAPPED
+            self.swapped.append(seq)
 
     def _schedule_decode(self) -> Tuple[List[Sequence], List[Sequence]]:
         """
@@ -272,9 +279,27 @@ class Scheduler:
         Returns:
             (decode_seqs, preempted_seqs)
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement Scheduler._schedule_decode")
+        scheduled = []
+        preempted = []
+        for seq in list(self.running):
+            if self._can_append(seq):
+                scheduled.append(seq)
+            else:
+                while not self._can_append(seq):
+                    victim = self.evictor.evict(1)
+                    for victim_id, victim_blocks in victim:
+                        victim_seq = None
+                        for s in self.running:
+                            if str(s.seq_id) == victim_id:
+                                victim_seq = s
+                                break
+                    if victim_seq:
+                        self.preempt(victim_seq)
+                        preempted.append(victim_seq)
+
+        return scheduled, preempted
+
 
     def _try_swap_in(self) -> List[Sequence]:
         """
@@ -292,9 +317,21 @@ class Scheduler:
               - Move from swapped to running
         2. Return list of swapped-in sequences
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement Scheduler._try_swap_in")
+        swapped_in = []
+        if self.config.preemption_mode == "swap":
+            for seq in list(self.swapped):
+                num_blocks_needed = len(seq.block_table)
+                if self.block_manager.gpu_allocator.has_free(num_blocks_needed):
+                    mapping = self.swapper.swap_in(seq.block_table)
+                    seq.block_table = [mapping[cpu_block_id] for cpu_block_id in seq.block_table]
+                    seq.status = SequenceStatus.RUNNING
+                    self.swapped.remove(seq)
+                    self.running.append(seq)
+                    swapped_in.append(seq)
+
+        return swapped_in
+                
 
     def schedule(self) -> SchedulerOutput:
         """
@@ -313,6 +350,8 @@ class Scheduler:
         Wire together _try_swap_in, _schedule_prefill, _schedule_decode.
         """
         list_of_prefill_seq = self._schedule_prefill()
+        list_of_decode_seq, preempt_seq = self._schedule_decode()
+        swapped_in_seq = self._try_swap_in()
         if list_of_prefill_seq:
             return SchedulerOutput(
                 scheduled_seqs=list_of_prefill_seq,
@@ -320,6 +359,14 @@ class Scheduler:
                 preempted_seqs=[],
                 swapped_in_seqs=[],
                 num_batched_tokens=sum(s.num_tokens for s in list_of_prefill_seq)
+            )
+        else:
+            return SchedulerOutput(
+                scheduled_seqs=list_of_decode_seq,
+                is_prefill=False,
+                preempted_seqs=preempt_seq,
+                swapped_in_seqs=swapped_in_seq,
+                num_batched_tokens=sum(s.num_tokens for s in list_of_decode_seq)
             )
 
 
