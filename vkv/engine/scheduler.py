@@ -396,7 +396,6 @@ class Scheduler:
         Returns:
             List of sequences that finished this step.
 
-        TODO: Implement this.
         1. For each (seq, token_id) pair:
            a. Call seq.append_token(token_id) — adds token + allocates block if needed
            b. Check if finished:
@@ -409,7 +408,19 @@ class Scheduler:
         2. Update evictor for sequences that are still running
         3. Return list of finished sequences
         """
-        raise NotImplementedError("TODO: Implement Scheduler.postprocess")
+        finished = []
+        for seq, token_id in zip(scheduled_seqs, token_ids):
+            seq.append_token(token_id)
+            if (token_id == self.config.eos_token_id and not seq.sampling_params.ignore_eos) or seq.num_completion_tokens >= seq.sampling_params.max_tokens:
+                seq.free()
+                self.running.remove(seq)
+                self.evictor.remove(seq.seq_id)
+                finished.append(seq)
+
+        return finished
+
+
+
 
     # ---- Part 6: Chunked Prefill (advanced) ----
 
