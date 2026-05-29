@@ -70,14 +70,20 @@ class LLMEngine:
             self.model_runner = ModelRunner(config, ...)
             self.scheduler = Scheduler(config)
 
-        TODO: Implement this.
         1. Store configs
         2. Create BlockManager(model_config, cache_config, device)
         3. Create Scheduler(block_manager, scheduler_config)
         4. Create MockModelRunner(model_config, device)
         5. Initialize outputs dict: Dict[int, RequestOutput]
         """
-        raise NotImplementedError("TODO: Implement LLMEngine.__init__")
+        self.model_config = model_config
+        self.cache_config = cache_config
+        self.scheduler_config = scheduler_config
+
+        self.block_manager = BlockManager(model_config, cache_config, device)
+        self.scheduler = Scheduler(self.block_manager, scheduler_config)
+        self.model_runner = MockModelRunner(model_config, device)
+        self.outputs: Dict[int, RequestOutput] = {}
 
     def add_request(
         self,
@@ -98,7 +104,6 @@ class LLMEngine:
         Returns:
             seq_id: Unique ID for this request
 
-        TODO: Implement this.
         1. Create Sequence(token_ids, block_manager, sampling_params)
         2. scheduler.add(seq)
         3. Return seq.seq_id
