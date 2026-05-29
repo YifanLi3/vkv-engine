@@ -108,7 +108,9 @@ class LLMEngine:
         2. scheduler.add(seq)
         3. Return seq.seq_id
         """
-        raise NotImplementedError("TODO: Implement LLMEngine.add_request")
+        seq = Sequence(token_ids, self.block_manager, sampling_params)
+        self.scheduler.add(seq)
+        return seq.seq_id
 
     def step(self) -> List[RequestOutput]:
         """
@@ -125,7 +127,6 @@ class LLMEngine:
         Returns:
             List of RequestOutputs for sequences that finished this step.
 
-        TODO: Implement this.
         1. Call scheduler.schedule() → get SchedulerOutput
         2. If is_prefill:
            - For each seq, write KV data to BlockManager
