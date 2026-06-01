@@ -120,7 +120,7 @@ class Scheduler:
         4. Create Swapper instance (for swap mode)
         """
         self.block_manager = block_manager
-        self.config = config
+        self.config = config or SchedulerConfig()
 
         self.waiting: deque[Sequence] = deque()
         self.running: deque[Sequence] = deque()

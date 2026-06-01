@@ -20,6 +20,7 @@ nano-vLLM's LLMEngine core:
 """
 
 from dataclasses import dataclass, field
+import token
 from typing import Dict, List, Optional
 
 from vkv.config import ModelConfig, CacheConfig
@@ -138,7 +139,35 @@ class LLMEngine:
            - Collect finished sequences into RequestOutput list
         4. Return finished outputs
         """
-        raise NotImplementedError("TODO: Implement LLMEngine.step")
+        output = self.scheduler.schedule()
+        if output.is_prefill:
+            for seq in output.scheduled_seqs:
+                kv = self.model_runner.prefill(len(seq))
+                for layer in range(self.model_config.num_layers):
+                    for token_pos in range(seq.num_prompt_tokens):
+                        block_id = seq.block_table[token_pos // self.block_manager.block_size]
+                        slot_idx = token_pos % self.block_manager.block_size
+                        self.block_manager.write_kv(
+                            block_id, layer, slot_idx,
+                            kv[layer, 0, :, token_pos, :],
+                            kv[layer, 1, :, token_pos, :],
+                        )
+            return []
+        else:
+            token_ids = []
+            for seq in output.scheduled_seqs:
+                token_id = self.model_runner.sample()
+                token_ids.append(token_id)
+
+            finished_seqs = self.scheduler.postprocess(output.scheduled_seqs, token_ids)
+            for seq in finished_seqs:
+                self.outputs[seq.seq_id] = RequestOutput(
+                    seq_id=seq.seq_id,
+                    prompt_token_ids=seq.token_ids[:seq.num_prompt_tokens],
+                    output_token_ids=seq.token_ids[seq.num_prompt_tokens:],
+                )
+            return [self.outputs[seq.seq_id] for seq in finished_seqs]
+
 
     def is_finished(self) -> bool:
         """Check if all requests are done. Delegates to scheduler."""
@@ -165,9 +194,7 @@ class LLMEngine:
         Returns:
             List of RequestOutput for all completed requests.
 
-        TODO: Implement this.
         1. If prompts provided, add_request for each
         2. Loop step() until is_finished()
         3. Collect and return all outputs, sorted by seq_id
         """
-        raise NotImplementedError("TODO: Implement LLMEngine.generate")
