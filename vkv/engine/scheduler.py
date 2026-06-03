@@ -441,6 +441,7 @@ class Scheduler:
            - If partially prefilled, keep in waiting with updated state
         4. Return combined batch
 
-        TODO: Implement this (advanced).
         """
-        raise NotImplementedError("TODO: Implement chunked prefill (advanced)")
+        budget = self.config.max_num_batched_tokens
+        for seq in list(self.running):
+

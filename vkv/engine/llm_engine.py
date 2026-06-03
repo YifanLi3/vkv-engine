@@ -198,3 +198,11 @@ class LLMEngine:
         2. Loop step() until is_finished()
         3. Collect and return all outputs, sorted by seq_id
         """
+        if prompts:
+            for prompt in prompts:
+                self.add_request(prompt, sampling_params)
+
+        while not self.is_finished():
+            self.step()
+
+        return sorted(self.outputs.values(), key=lambda x: x.seq_id)
