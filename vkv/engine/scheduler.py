@@ -349,6 +349,9 @@ class Scheduler:
 
         Wire together _try_swap_in, _schedule_prefill, _schedule_decode.
         """
+        if self.config.enable_chunked_prefill:
+            return self._schedule_chunked_prefill()
+
         list_of_prefill_seq = self._schedule_prefill()
         list_of_decode_seq, preempt_seq = self._schedule_decode()
         swapped_in_seq = self._try_swap_in()
@@ -442,6 +445,60 @@ class Scheduler:
         4. Return combined batch
 
         """
+        decode_seqs = []
+        prefill_seqs = []
+        preempted = []
+
         budget = self.config.max_num_batched_tokens
         for seq in list(self.running):
+            if self._can_append(seq):
+                decode_seqs.append(seq)
+                budget -= 1
+            else:
+                while not self._can_append(seq):
+                    victim = self.evictor.evict(1)
+                    for victim_id, victim_blocks in victim:
+                        victim_seq = None
+                        for s in self.running:
+                            if str(s.seq_id) == victim_id:
+                                victim_seq = s
+                                break
+                    if victim_seq:
+                        self.preempt(victim_seq)
+                        preempted.append(victim_seq)
+                decode_seqs.append(seq)
+                budget -= 1
+        
+        if self.waiting and budget > 0:
+            seq = self.waiting[0]
+            remaining_prompt = seq.num_prompt_tokens - seq.num_cached_tokens
+            chunk_tokens = min(remaining_prompt, budget, self.config.chunk_size)
 
+            needed_blocks = num_blocks_for_tokens(
+                seq.num_cached_tokens + chunk_tokens,
+                self.block_manager.block_size
+            ) - len(seq.block_table)
+
+            if needed_blocks <= 0 or self.block_manager.can_allocate(needed_blocks):
+                if needed_blocks > 0:
+                    new_blocks = self.block_manager.allocate(needed_blocks)
+                    seq.block_table.extend(new_blocks)
+
+                seq.num_cached_tokens += chunk_tokens
+
+                if seq.num_cached_tokens >= seq.num_prompt_tokens:
+                    self.waiting.popleft()
+                    seq.status = SequenceStatus.RUNNING
+                    self.running.append(seq)
+                    self.evictor.add(str(seq.seq_id), seq.block_table)
+
+                prefill_seqs.append(seq)
+                budget -= chunk_tokens
+
+        all_seqs = prefill_seqs + decode_seqs
+        return SchedulerOutput(
+            scheduled_seqs=all_seqs,
+            is_prefill=len(prefill_seqs) > 0,
+            preempted_seqs=preempted,
+            num_batched_tokens=self.config.max_num_batched_tokens - budget,
+        )
