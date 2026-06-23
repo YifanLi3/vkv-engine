@@ -79,13 +79,15 @@ class MetricsCollector:
         """
         Initialize the metrics collector.
 
-        TODO: Implement this.
         1. self._request_metrics: Dict[int, RequestMetrics] = {}
         2. self._completed_metrics: List[RequestMetrics] = []
         3. self._num_preemptions: int = 0
         4. self._num_completed: int = 0
         """
-        raise NotImplementedError("TODO: Implement MetricsCollector.__init__")
+        self._request_metrics: Dict[int, RequestMetrics] = {}
+        self._completed_metrics: List[RequestMetrics] = []
+        self._num_preemptions: int = 0
+        self._num_completed: int = 0
 
     def on_request_arrival(self, seq_id: int, num_prompt_tokens: int) -> None:
         """
