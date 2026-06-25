@@ -93,37 +93,45 @@ class MetricsCollector:
         """
         Record when a new request arrives.
 
-        TODO: Implement this.
         Create a RequestMetrics with arrival_time = time.time()
         """
-        raise NotImplementedError("TODO: Implement on_request_arrival")
+        self._request_metrics[seq_id] = RequestMetrics(
+            seq_id=seq_id,
+            arrival_time=time.time(),
+            num_prompt_tokens=num_prompt_tokens,
+        )
 
     def on_first_token(self, seq_id: int) -> None:
         """
         Record when the first token is generated (after prefill).
 
-        TODO: Implement this.
         Set first_token_time = time.time()
         """
-        raise NotImplementedError("TODO: Implement on_first_token")
+        metrics = self._request_metrics[seq_id]
+        metrics.first_token_time = time.time()
 
     def on_request_finish(self, seq_id: int, num_output_tokens: int) -> None:
         """
         Record when a request finishes.
 
-        TODO: Implement this.
         1. Set finish_time = time.time() and num_output_tokens
         2. Move from _request_metrics to _completed_metrics
         3. Increment _num_completed
         """
-        raise NotImplementedError("TODO: Implement on_request_finish")
+        metrics = self._request_metrics[seq_id]
+        metrics.finish_time = time.time()
+        metrics.num_output_tokens = num_output_tokens
+
+        self._completed_metrics.append(metrics)
+        del self._request_metrics[seq_id]
+        self._num_completed += 1
 
     def on_preemption(self) -> None:
         """Record a preemption event.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement on_preemption")
+        self._num_preemptions += 1
+
 
     def collect_snapshot(self, block_manager, scheduler) -> SystemSnapshot:
         """
@@ -136,10 +144,22 @@ class MetricsCollector:
         Returns:
             SystemSnapshot with current stats
 
-        TODO: Implement this.
         Read stats from block_manager.stats and scheduler queue lengths.
         """
-        raise NotImplementedError("TODO: Implement collect_snapshot")
+        stats = block_manager.stats
+
+        return SystemSnapshot(
+            timestamp=time.time(),
+            total_blocks=stats.total_blocks,
+            used_blocks=stats.used_blocks,
+            free_blocks=stats.free_blocks,
+            utilization=stats.utilization,
+            num_waiting=len(scheduler.waiting),
+            num_running=len(scheduler.running),
+            num_swapped=len(scheduler.swapped),
+            num_preemptions=self._num_preemptions,
+            num_completed=self._num_completed,
+        )
 
     def get_request_metrics(self, seq_id: int) -> Optional[RequestMetrics]:
         """Get metrics for a specific request (active or completed)."""
@@ -157,9 +177,18 @@ class MetricsCollector:
         Returns:
             Dict with avg_ttft, avg_tpot, p99_ttft, throughput, etc.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement get_summary")
+        if not self._completed_metrics:
+            return {
+                "num_completed": 0,
+                "avg_ttft": 0.0,
+                "avg_tpot": 0.0,
+                "p99_ttft": 0.0,
+                "throughput_tokens_per_sec": 0.0,
+                "total_output_tokens": 0,
+            }
+
+        ttfts = [m.ttft for m in self._completed_metrics]
 
 
 # =============================================================================
