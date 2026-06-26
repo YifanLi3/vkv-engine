@@ -5,11 +5,12 @@ Collects real-time metrics from BlockManager, Scheduler, and LLMEngine.
 Exposes them via Prometheus for Grafana dashboards.
 """
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+from prometheus_client import Counter, Gauge, Histogram, start_http_server, REGISTRY, CollectorRegistry
 
 
 # =============================================================================
@@ -189,6 +190,22 @@ class MetricsCollector:
             }
 
         ttfts = [m.ttft for m in self._completed_metrics]
+        tpots = [m.tpot for m in self._completed_metrics if m.tpot > 0]
+        total_tokens = sum(m.num_output_tokens for m in self._completed_metrics)
+        total_time = sum(m.total_time for m in self._completed_metrics)
+
+        sorted_ttfts = sorted(ttfts)
+        p99_idx = min(int(math.ceil(len(sorted_ttfts) * 0.99)), len(sorted_ttfts)) - 1
+        p99_ttft = sorted_ttfts[p99_idx]
+
+        return {
+            "num_completed": self._num_completed,
+            "avg_ttft": sum(ttfts) / len(ttfts),
+            "avg_tpot": sum(tpots) / len(tpots) if tpots else 0.0,
+            "p99_ttft": p99_ttft,
+            "throughput_tokens_per_sec": total_tokens / total_time if total_time > 0 else 0.0,
+            "total_output_tokens": total_tokens,
+        }
 
 
 # =============================================================================
@@ -208,36 +225,40 @@ class PrometheusExporter:
         """
         Define Prometheus metrics and start HTTP server.
 
-        TODO: Implement this.
         1. Define Gauge/Counter/Histogram metrics
         2. Start HTTP server (optional in tests, required in production)
         """
         self.port = port
 
+        # Use a separate registry to avoid duplicate registration in tests
+        self._registry = CollectorRegistry()
+
         # Block metrics
-        self.block_utilization = Gauge('vkv_block_utilization', 'Block pool utilization ratio')
-        self.free_blocks = Gauge('vkv_free_blocks', 'Number of free GPU blocks')
-        self.used_blocks = Gauge('vkv_used_blocks', 'Number of used GPU blocks')
+        self.block_utilization = Gauge('vkv_block_utilization', 'Block pool utilization ratio', registry=self._registry)
+        self.free_blocks = Gauge('vkv_free_blocks', 'Number of free GPU blocks', registry=self._registry)
+        self.used_blocks = Gauge('vkv_used_blocks', 'Number of used GPU blocks', registry=self._registry)
 
         # Queue metrics
-        self.num_waiting = Gauge('vkv_num_waiting', 'Sequences in waiting queue')
-        self.num_running = Gauge('vkv_num_running', 'Sequences in running queue')
-        self.num_swapped = Gauge('vkv_num_swapped', 'Sequences in swapped queue')
+        self.num_waiting = Gauge('vkv_num_waiting', 'Sequences in waiting queue', registry=self._registry)
+        self.num_running = Gauge('vkv_num_running', 'Sequences in running queue', registry=self._registry)
+        self.num_swapped = Gauge('vkv_num_swapped', 'Sequences in swapped queue', registry=self._registry)
 
         # Request metrics
         self.ttft_histogram = Histogram(
             'vkv_ttft_seconds', 'Time to First Token',
             buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0],
+            registry=self._registry,
         )
         self.tpot_histogram = Histogram(
             'vkv_tpot_seconds', 'Time per Output Token',
             buckets=[0.005, 0.01, 0.02, 0.05, 0.1],
+            registry=self._registry,
         )
 
         # Counters
-        self.requests_completed = Counter('vkv_requests_completed_total', 'Total completed requests')
-        self.preemptions_total = Counter('vkv_preemptions_total', 'Total preemptions')
-        self.tokens_generated = Counter('vkv_tokens_generated_total', 'Total tokens generated')
+        self.requests_completed = Counter('vkv_requests_completed_total', 'Total completed requests', registry=self._registry)
+        self.preemptions_total = Counter('vkv_preemptions_total', 'Total preemptions', registry=self._registry)
+        self.tokens_generated = Counter('vkv_tokens_generated_total', 'Total tokens generated', registry=self._registry)
 
     def update(self, snapshot: SystemSnapshot, new_completed: List[RequestMetrics] = None) -> None:
         """
@@ -247,12 +268,27 @@ class PrometheusExporter:
             snapshot: Current system state
             new_completed: Newly completed request metrics (for histograms)
 
-        TODO: Implement this.
         1. Set gauge values from snapshot
         2. Observe TTFT/TPOT histograms for new completed requests
         3. Increment counters
         """
-        raise NotImplementedError("TODO: Implement PrometheusExporter.update")
+        self.block_utilization.set(snapshot.utilization)
+        self.free_blocks.set(snapshot.free_blocks)
+        self.used_blocks.set(snapshot.used_blocks)
+        self.num_waiting.set(snapshot.num_waiting)
+        self.num_running.set(snapshot.num_running)
+        self.num_swapped.set(snapshot.num_swapped)
+        self.preemptions_total._value.set(snapshot.num_preemptions)
+
+        if new_completed:
+            for m in new_completed:
+                if m.ttft > 0:
+                    self.ttft_histogram.observe(m.ttft)
+                if m.tpot > 0:
+                    self.tpot_histogram.observe(m.tpot)
+
+                self.requests_completed.inc()
+                self.tokens_generated.inc(m.num_output_tokens)
 
     def start_server(self):
         """Start the Prometheus HTTP server. Call once at startup."""
@@ -274,12 +310,11 @@ class Monitor:
 
     def __init__(self, port: int = 9090, enable_prometheus: bool = False):
         """
-        TODO: Implement this.
         1. Create MetricsCollector
         2. Create PrometheusExporter (if enabled)
         3. Optionally start HTTP server
         """
-        raise NotImplementedError("TODO: Implement Monitor.__init__")
+        self.
 
     def on_request_arrival(self, seq_id: int, num_prompt_tokens: int) -> None:
         """Delegate to collector.
