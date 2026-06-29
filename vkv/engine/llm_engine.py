@@ -30,6 +30,8 @@ from vkv.engine.sequence import Sequence, SequenceStatus
 from vkv.engine.scheduler import Scheduler, SchedulerConfig, SchedulerOutput
 from vkv.engine.model_runner import MockModelRunner
 
+from vkv.engine.monitor import Monitor
+
 
 @dataclass
 class RequestOutput:
@@ -85,6 +87,7 @@ class LLMEngine:
         self.scheduler = Scheduler(self.block_manager, scheduler_config)
         self.model_runner = MockModelRunner(model_config, device)
         self.outputs: Dict[int, RequestOutput] = {}
+        self.monitor = Monitor()
 
     def add_request(
         self,
@@ -152,6 +155,7 @@ class LLMEngine:
                             kv[layer, 0, :, token_pos, :],
                             kv[layer, 1, :, token_pos, :],
                         )
+            self.monitor.on_step(self.block_manager, self.scheduler)
             return []
         else:
             token_ids = []
@@ -166,6 +170,7 @@ class LLMEngine:
                     prompt_token_ids=seq.token_ids[:seq.num_prompt_tokens],
                     output_token_ids=seq.token_ids[seq.num_prompt_tokens:],
                 )
+            self.monitor.on_step(self.block_manager, self.scheduler)
             return [self.outputs[seq.seq_id] for seq in finished_seqs]
 
 

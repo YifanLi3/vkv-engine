@@ -8,6 +8,7 @@ Exposes them via Prometheus for Grafana dashboards.
 import math
 import time
 from dataclasses import dataclass, field
+from tracemalloc import Snapshot
 from typing import Dict, List, Optional
 
 from prometheus_client import Counter, Gauge, Histogram, start_http_server, REGISTRY, CollectorRegistry
@@ -292,7 +293,7 @@ class PrometheusExporter:
 
     def start_server(self):
         """Start the Prometheus HTTP server. Call once at startup."""
-        start_http_server(self.port)
+        start_http_server(self.port, registry=self._registry)
 
 
 # =============================================================================
@@ -314,47 +315,50 @@ class Monitor:
         2. Create PrometheusExporter (if enabled)
         3. Optionally start HTTP server
         """
-        self.
+        self.collector = MetricsCollector()
+        self.enable_prometheus = enable_prometheus
+        if self.enable_prometheus:
+            self.exporter = PrometheusExporter(port)
+            self.exporter.start_server()
 
     def on_request_arrival(self, seq_id: int, num_prompt_tokens: int) -> None:
         """Delegate to collector.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO")
+        self.collector.on_request_arrival(seq_id, num_prompt_tokens)
 
     def on_first_token(self, seq_id: int) -> None:
         """Delegate to collector.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO")
+        self.collector.on_first_token(seq_id)
 
     def on_request_finish(self, seq_id: int, num_output_tokens: int) -> None:
         """Delegate to collector.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO")
+        self.collector.on_request_finish(seq_id, num_output_tokens)
 
     def on_preemption(self) -> None:
         """Delegate to collector.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO")
+        self.collector.on_preemption()
 
     def on_step(self, block_manager, scheduler, finished_seqs=None) -> SystemSnapshot:
         """
         Called once per LLMEngine.step().
         Collect snapshot, update Prometheus, return snapshot.
 
-        TODO: Implement this.
         1. collector.collect_snapshot(block_manager, scheduler)
         2. If prometheus enabled, exporter.update(snapshot)
         3. Return snapshot
         """
-        raise NotImplementedError("TODO: Implement Monitor.on_step")
+        snapshot = self.collector.collect_snapshot(block_manager, scheduler)
+        if self.enable_prometheus:
+            self.exporter.update(snapshot)
+
+        return snapshot
 
     def get_summary(self) -> dict:
         """Get summary stats. Delegate to collector."""
