@@ -13,6 +13,7 @@ from vkv.config import ModelConfig, CacheConfig
 from vkv.engine.block_manager import BlockManager
 from vkv.engine.paged_cache import PagedCache
 
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 class RealModelRunner:
     """
@@ -45,19 +46,29 @@ class RealModelRunner:
             device: "cuda" or "cpu"
             dtype: Model dtype (float16 for GPU, float32 for CPU)
 
-        TODO: Implement this.
         1. Import and load AutoModelForCausalLM and AutoTokenizer
         2. Extract model config → create ModelConfig
         3. Store block_manager reference
         4. Store block_size from block_manager
         """
-        raise NotImplementedError("TODO: Implement RealModelRunner.__init__")
+        self.device = device
+        self.dtype = dtype
+        self.block_manager = block_manager
+        self.block_size = block_manager.block_size
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map="auto",
+        ).eval()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model_config = self._extract_model_config()
+
 
     def _extract_model_config(self) -> ModelConfig:
         """
         Extract ModelConfig from HuggingFace model config.
+        """
 
-        TODO: Implement this.
         cfg = self.model.config
         return ModelConfig(
             num_layers=cfg.num_hidden_layers,
@@ -65,8 +76,6 @@ class RealModelRunner:
             head_dim=cfg.hidden_size // cfg.num_attention_heads,
             dtype=self.dtype,
         )
-        """
-        raise NotImplementedError("TODO: Implement _extract_model_config")
 
     @torch.inference_mode()
     def prefill(self, input_ids: List[int]) -> PagedCache:
