@@ -39,12 +39,18 @@ class PagedCache(Cache):
         block_size: int = 16,
     ):
         """
-        TODO: Implement this.
         1. Store block_manager and config
         2. Initialize block_table: List[int] = []
         3. Initialize _seq_length = 0
         """
-        raise NotImplementedError("TODO: Implement PagedCache.__init__")
+        self.block_manager = block_manager
+        self.num_layers = num_layers
+        self.num_kv_heads = num_kv_heads
+        self.head_dim = head_dim
+        self.block_size = block_size
+        
+        self.block_table: List[int] = []
+        self._seq_length = 0
 
     def update(
         self,
@@ -66,7 +72,6 @@ class PagedCache(Cache):
         Returns:
             (full_keys, full_values) for this layer, including history
 
-        TODO: Implement this.
         1. For each new token:
            a. Compute block_idx and slot_idx
            b. Allocate new block if needed
@@ -74,14 +79,34 @@ class PagedCache(Cache):
         2. Update _seq_length (only on last layer to avoid double-counting)
         3. Gather and return full KV using block_manager.gather_kv()
         """
-        raise NotImplementedError("TODO: Implement PagedCache.update")
+        new_tokens = key_states.shape[2]
+        for i in range(new_tokens):
+            key = key_states[0, :, i, :]
+            value = value_states[0, :, i, :]
+
+            token_pos = self._seq_length + i
+            
+            block_idx = token_pos // self.block_size
+            slot_idx = token_pos % self.block_size
+
+            if block_idx >= len(self.block_table):
+                new_block_ids = self.block_manager.allocate(1)
+                self.block_table.append(new_block_ids[0])
+
+            self.block_manager.write_kv(self.block_table[block_idx], layer_idx, slot_idx, key, value)
+
+        total_tokens = self._seq_length + new_tokens
+        if layer_idx + 1 == self.num_layers:
+            self._seq_length = total_tokens
+
+        return self.block_manager.gather_kv(self.block_table, total_tokens, layer_idx)
+
 
     def get_seq_length(self, layer_idx: int = 0) -> int:
         """Return current cached sequence length.
 
-        TODO: Implement this.
         """
-        raise NotImplementedError("TODO: Implement get_seq_length")
+        return self._seq_length
 
     def get_max_cache_length(self) -> Optional[int]:
         """Max tokens this cache can hold."""
@@ -90,9 +115,10 @@ class PagedCache(Cache):
     def free(self):
         """Release all blocks.
 
-        TODO: Implement this.
         1. block_manager.free(self.block_table)
         2. Clear block_table
         3. Reset _seq_length
         """
-        raise NotImplementedError("TODO: Implement PagedCache.free")
+        self.block_manager.free(self.block_table)
+        self.block_table: List[int] = []
+        self._seq_length = 0
