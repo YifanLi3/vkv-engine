@@ -121,21 +121,86 @@ outputs = model.generate(**inputs, past_key_values=paged_cache)
 <a id="part-4-e2e"></a>
 ## Part 4: 端到端推理 [集成]
 
-使用 RealModelRunner + Scheduler + BlockManager 跑完整推理。
+> **文件**: `examples/single_inference.py`, `examples/multi_inference.py`  
+> **测试**: `uv run pytest tests/test_phase6_part4.py -v`（需要 GPU）
+
+### Background
+
+Part 1-3 实现了 `RealModelRunner`，可以独立跑单条推理。
+Part 4 把它插进 `LLMEngine`，实现多请求并发。
+
+核心差异：`LLMEngine.step()` 目前用 `MockModelRunner`：
+- prefill：生成随机 KV，手动写入 BlockManager
+- decode：随机采样 token
+
+换成 `RealModelRunner` 后，KV 写入由 `PagedCache` 内部完成，引擎层只需：
+- prefill：`runner.prefill(prompt_ids)` → 返回 `PagedCache`（KV 已自动写入）
+- decode：`runner.decode_step(last_token, paged_cache)` → `(logits, paged_cache)` → `sample(logits)`
 
 ### Task 4.1: 单条推理
 
+直接用 `RealModelRunner.generate()` 跑推理，不经过 LLMEngine scheduler。
+
+**文件**: `examples/single_inference.py`
+
 ```python
-engine = LLMEngine(model_config, cache_config, device="cuda")
-engine.model_runner = RealModelRunner("meta-llama/Llama-3.1-8B-Instruct")
-outputs = engine.generate(
-    prompts=[tokenizer.encode("What is AI?")],
-    sampling_params=SamplingParams(max_tokens=50),
-)
-print(tokenizer.decode(outputs[0].output_token_ids))
+runner = RealModelRunner("TinyLlama/TinyLlama-1.1B-Chat-v1.0", block_manager, device="cuda")
+output = runner.generate("What is AI?", max_new_tokens=50)
+print(output)
 ```
 
+需要填写的 TODO：
+1. 初始化 `ModelConfig`（TinyLlama: num_layers=22, num_kv_heads=4, head_dim=64）
+2. 初始化 `CacheConfig`（选择合适的 block_size 和 num_gpu_blocks）
+3. 创建 `BlockManager` 和 `RealModelRunner`
+
 ### Task 4.2: 多请求并发推理
+
+创建 `RealLLMEngine`，继承 `LLMEngine`，重写 `step()` 使用真实模型。
+
+**文件**: `examples/multi_inference.py`
+
+关键设计：
+```python
+class RealLLMEngine(LLMEngine):
+    paged_caches: Dict[int, PagedCache]  # seq_id → PagedCache
+
+    def step(self):
+        output = self.scheduler.schedule()
+        if output.is_prefill:
+            for seq in output.scheduled_seqs:
+                # prefill：runner 内部写 KV 进 BlockManager
+                paged_cache = self.model_runner.prefill(seq 的 prompt token ids)
+                self.paged_caches[seq.seq_id] = paged_cache
+            return []
+        else:
+            token_ids = []
+            for seq in output.scheduled_seqs:
+                paged_cache = self.paged_caches[seq.seq_id]
+                logits, paged_cache = self.model_runner.decode_step(
+                    last_token_id, paged_cache
+                )
+                token_ids.append(self.model_runner.sample(logits))
+            finished_seqs = self.scheduler.postprocess(seqs, token_ids)
+            for seq in finished_seqs:
+                self.paged_caches[seq.seq_id].free()  # 释放 block
+                # 收集 RequestOutput
+```
+
+需要填写的 TODO：
+1. `RealLLMEngine.__init__`：用 `RealModelRunner` 替换 `MockModelRunner`
+2. `step()` prefill 分支：prefill 每个 seq，存入 `self.paged_caches`
+3. `step()` decode 分支：decode 每个 seq，sample token，处理完成的 seq
+
+### Task 4.3: 验证 block 无泄漏
+
+每次 generate 完成后，`block_manager.stats.used_blocks` 应为 0。
+
+```python
+for _ in range(3):
+    engine.generate(prompts=[...], sampling_params=sp)
+    assert engine.block_manager.stats.used_blocks == 0
+```
 
 ---
 
@@ -169,10 +234,15 @@ huggingface-cli login
 ## 运行测试
 
 ```bash
-# Part 1-3 需要 GPU
+# Part 1-3（需要 GPU）
 uv run pytest tests/test_phase6.py -k "part1" -v
 uv run pytest tests/test_phase6.py -k "part2" -v
+uv run pytest tests/test_phase6.py -k "part3" -v
 
-# 不需要 GPU 的测试用 mock
+# Part 4（需要 GPU）
+uv run pytest tests/test_phase6_part4.py -k "task1" -v
+uv run pytest tests/test_phase6_part4.py -k "task2" -v
+
+# 不需要 GPU 的测试
 uv run pytest tests/test_phase6.py -k "cpu" -v
 ```
