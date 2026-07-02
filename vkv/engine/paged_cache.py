@@ -103,10 +103,14 @@ class PagedCache(Cache):
 
 
     def get_seq_length(self, layer_idx: int = 0) -> int:
-        """Return current cached sequence length.
-
-        """
+        """Return current cached sequence length."""
         return self._seq_length
+
+    def get_mask_sizes(self, query_length: int, layer_idx: int) -> tuple:
+        """Required by HuggingFace Cache interface for attention mask computation."""
+        if self._seq_length == 0:
+            return query_length, 0
+        return self._seq_length, 0
 
     def get_max_cache_length(self) -> Optional[int]:
         """Max tokens this cache can hold."""

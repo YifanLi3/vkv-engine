@@ -88,7 +88,6 @@ class RealModelRunner:
         Returns:
             PagedCache containing the computed KV cache
 
-        TODO: Implement this.
         1. Create PagedCache instance
         2. Convert input_ids to tensor
         3. Run model forward: model(input_ids, past_key_values=paged_cache)
@@ -96,7 +95,18 @@ class RealModelRunner:
            which writes KV data to BlockManager.
         4. Return paged_cache
         """
-        raise NotImplementedError("TODO: Implement RealModelRunner.prefill")
+        paged_cache = PagedCache(
+            self.block_manager, 
+            self.model_config.num_layers, 
+            self.model_config.num_kv_heads,
+            self.model_config.head_dim,
+            self.block_size
+            )
+        input_tensor = torch.tensor([input_ids], dtype=torch.long, device=self.device)
+        output = self.model(input_tensor, past_key_values=paged_cache)
+        logits = output.logits[:, -1, :]
+
+        return paged_cache
 
     @torch.inference_mode()
     def decode_step(
@@ -115,12 +125,14 @@ class RealModelRunner:
             (logits, updated_paged_cache)
             logits shape: [1, vocab_size]
 
-        TODO: Implement this.
         1. Convert token_id to tensor [1, 1]
         2. Run model forward with past_key_values=paged_cache
         3. Return (logits, paged_cache)
         """
-        raise NotImplementedError("TODO: Implement RealModelRunner.decode_step")
+        input_tensor = torch.tensor([[token_id]], dtype=torch.long, device=self.device)
+        output = self.model.forward(input_tensor, past_key_values=paged_cache)
+        logits = output.logits[:, 0, :]
+        return (logits, paged_cache)
 
     def sample(
         self,
@@ -137,13 +149,15 @@ class RealModelRunner:
         Returns:
             Sampled token ID
 
-        TODO: Implement this.
         1. Apply temperature: logits = logits / temperature
         2. Convert to probabilities: probs = softmax(logits)
         3. Sample: token_id = torch.multinomial(probs, 1)
         4. Return token_id as int
         """
-        raise NotImplementedError("TODO: Implement RealModelRunner.sample")
+        logits = logits / temperature
+        probs = torch.softmax(logits, dim=-1)
+        token_id = torch.multinomial(probs, 1).item()
+        return token_id
 
     @torch.inference_mode()
     def generate(
@@ -155,7 +169,6 @@ class RealModelRunner:
         """
         Convenience method: full generation from text prompt to text output.
 
-        TODO: Implement this.
         1. Tokenize prompt
         2. Prefill → get paged_cache
         3. Loop decode_step + sample for max_new_tokens
@@ -163,4 +176,17 @@ class RealModelRunner:
         5. Free paged_cache
         6. Return text
         """
-        raise NotImplementedError("TODO: Implement RealModelRunner.generate")
+        input_ids = self.tokenizer.encode(prompt)
+        paged_cache = self.prefill(input_ids)
+
+        generated = []
+        token_id = input_ids[-1]
+        for _ in range(max_new_tokens):
+            logits, paged_cache = self.decode_step(token_id, paged_cache)
+            token_id = self.sample(logits, temperature)
+            generated.append(token_id)
+
+        paged_cache.free()
+
+        return self.tokenizer.decode(generated)
+

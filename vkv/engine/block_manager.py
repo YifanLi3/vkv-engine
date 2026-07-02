@@ -105,15 +105,19 @@ class BlockManager:
 
         # self.gpu_key_cache: List[torch.Tensor] = [...]   # len = num_layers
         # self.gpu_value_cache: List[torch.Tensor] = [...]
-        self.gpu_key_cache = [torch.zeros(self.num_gpu_blocks, self.model_config.num_kv_heads, 
-                            self.block_size, self.model_config.head_dim) for _ in range(self.num_layers)]
-        self.gpu_value_cache = [torch.zeros(self.num_gpu_blocks, self.model_config.num_kv_heads, 
-                            self.block_size, self.model_config.head_dim) for _ in range(self.num_layers)]
+        self.gpu_key_cache = [torch.zeros(self.num_gpu_blocks, self.model_config.num_kv_heads,
+                            self.block_size, self.model_config.head_dim,
+                            dtype=self.model_config.dtype, device=device) for _ in range(self.num_layers)]
+        self.gpu_value_cache = [torch.zeros(self.num_gpu_blocks, self.model_config.num_kv_heads,
+                            self.block_size, self.model_config.head_dim,
+                            dtype=self.model_config.dtype, device=device) for _ in range(self.num_layers)]
 
-        self.cpu_key_cache = [torch.zeros(self.num_cpu_blocks, self.model_config.num_kv_heads, 
-                            self.block_size, self.model_config.head_dim) for _ in range(self.num_layers)]
-        self.cpu_value_cache = [torch.zeros(self.num_cpu_blocks, self.model_config.num_kv_heads, 
-                            self.block_size, self.model_config.head_dim) for _ in range(self.num_layers)]
+        self.cpu_key_cache = [torch.zeros(self.num_cpu_blocks, self.model_config.num_kv_heads,
+                            self.block_size, self.model_config.head_dim,
+                            dtype=self.model_config.dtype) for _ in range(self.num_layers)]
+        self.cpu_value_cache = [torch.zeros(self.num_cpu_blocks, self.model_config.num_kv_heads,
+                            self.block_size, self.model_config.head_dim,
+                            dtype=self.model_config.dtype) for _ in range(self.num_layers)]
 
         self.gpu_allocator = BlockAllocator(self.num_gpu_blocks)
         self.cpu_allocator = BlockAllocator(self.num_cpu_blocks)
