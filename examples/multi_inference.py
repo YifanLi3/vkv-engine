@@ -1,8 +1,8 @@
 """
-Phase 6, Part 4, Task 4.2: 多请求并发推理
+Phase 6, Part 4, Task 4.2: Multi-request concurrent inference
 
-创建 RealLLMEngine，继承 LLMEngine，替换 step() 里的 MockModelRunner
-为真实 RealModelRunner，支持多请求并发。
+Create RealLLMEngine by extending LLMEngine and overriding step() to use
+RealModelRunner instead of MockModelRunner. Supports multiple concurrent requests.
 """
 
 from typing import Dict, List, Optional
@@ -26,10 +26,10 @@ class RealLLMEngine(LLMEngine):
     """
     LLMEngine with RealModelRunner replacing MockModelRunner.
 
-    Key difference from LLMEngine:
-    - Maintains paged_caches dict: seq_id → PagedCache
-    - prefill: runner.prefill(prompt_ids) → PagedCache (KV written internally)
-    - decode: runner.decode_step(last_token, paged_cache) → (logits, paged_cache)
+    Key differences from LLMEngine:
+    - Maintains paged_caches dict: seq_id -> PagedCache
+    - prefill: runner.prefill(prompt_ids) -> PagedCache (KV written internally)
+    - decode: runner.decode_step(last_token, paged_cache) -> (logits, paged_cache)
     - on finish: paged_cache.free()
     """
 
@@ -43,12 +43,12 @@ class RealLLMEngine(LLMEngine):
     ):
         super().__init__(model_config, cache_config, scheduler_config, device)
 
-        # Task 4.2.1: 替换 MockModelRunner 为 RealModelRunner
+        # Task 4.2.1: Replace MockModelRunner with RealModelRunner
         self.model_runner = RealModelRunner(
-            # TODO: 传入 model_name, block_manager, device
+            # TODO: pass model_name, block_manager, device
         )
 
-        # Task 4.2.2: 维护每个 seq 的 PagedCache
+        # Maintains one PagedCache per active sequence
         self.paged_caches: Dict[int, PagedCache] = {}
 
     def step(self) -> List[RequestOutput]:
@@ -56,54 +56,54 @@ class RealLLMEngine(LLMEngine):
         Override step() to use real model inference.
 
         Prefill step:
-            1. scheduler.schedule() → SchedulerOutput (is_prefill=True)
+            1. scheduler.schedule() -> SchedulerOutput (is_prefill=True)
             2. For each seq:
-               a. 调用 self.model_runner.prefill(seq 的 prompt token ids)
-               b. 把返回的 PagedCache 存进 self.paged_caches[seq.seq_id]
-            3. Return []  (prefill 不产生新 token)
+               a. Call self.model_runner.prefill(seq's prompt token ids)
+               b. Store the returned PagedCache in self.paged_caches[seq.seq_id]
+            3. Return []  (no tokens generated during prefill)
 
         Decode step:
-            1. scheduler.schedule() → SchedulerOutput (is_prefill=False)
+            1. scheduler.schedule() -> SchedulerOutput (is_prefill=False)
             2. For each seq:
-               a. 取出 self.paged_caches[seq.seq_id]
-               b. 调用 self.model_runner.decode_step(last_token_id, paged_cache)
-               c. 调用 self.model_runner.sample(logits) 得到 token_id
+               a. Retrieve self.paged_caches[seq.seq_id]
+               b. Call self.model_runner.decode_step(last_token_id, paged_cache)
+               c. Call self.model_runner.sample(logits) to get token_id
             3. scheduler.postprocess(seqs, token_ids)
-            4. 对于完成的 seq：paged_cache.free()，收集 RequestOutput
+            4. For finished seqs: paged_cache.free(), collect RequestOutput
             5. Return finished outputs
         """
         output = self.scheduler.schedule()
 
         if output.is_prefill:
             for seq in output.scheduled_seqs:
-                # TODO: prefill 每个 seq，把 PagedCache 存入 self.paged_caches
+                # TODO: prefill each seq, store PagedCache in self.paged_caches
                 pass
             return []
         else:
             token_ids = []
             for seq in output.scheduled_seqs:
-                # TODO: decode 每个 seq
-                # 提示：seq.token_ids[-1] 是上一个 token
+                # TODO: decode each seq
+                # Hint: seq.token_ids[-1] is the last generated token
                 pass
 
             finished_seqs = self.scheduler.postprocess(output.scheduled_seqs, token_ids)
             for seq in finished_seqs:
-                # TODO: free PagedCache，收集 RequestOutput
+                # TODO: free PagedCache and collect RequestOutput
                 pass
 
             return [self.outputs[seq.seq_id] for seq in finished_seqs]
 
 
 def main():
-    # Task 4.2.3: 初始化配置
+    # Task 4.2.2: Initialize configs
     model_cfg = ModelConfig(
-        # TODO: TinyLlama 参数
+        # TODO: TinyLlama parameters
     )
     cache_cfg = CacheConfig(
         # TODO
     )
     scheduler_cfg = SchedulerConfig(
-        # TODO: 设置 max_seqs_in_flight 等参数
+        # TODO: set max_seqs_in_flight and other parameters
     )
 
     engine = RealLLMEngine(
@@ -116,7 +116,7 @@ def main():
 
     tokenizer = engine.model_runner.tokenizer
 
-    # Task 4.2.4: 提交多个请求
+    # Task 4.2.3: Submit multiple requests
     prompts = [
         "What is AI?",
         "Explain neural networks.",
