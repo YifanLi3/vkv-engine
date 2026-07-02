@@ -188,5 +188,6 @@ class RealModelRunner:
 
         paged_cache.free()
 
-        return self.tokenizer.decode(generated)
+        text = self.tokenizer.decode(generated, skip_special_tokens=True)
+        return text.replace("<|assistant|>", "").replace("<|user|>", "").strip()
 
