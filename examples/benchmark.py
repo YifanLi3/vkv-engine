@@ -11,11 +11,16 @@ Metrics:
   - Max concurrent requests before OOM
 """
 
+import logging
 import time
+import warnings
 from typing import List
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+warnings.filterwarnings("ignore")
+logging.getLogger("transformers").setLevel(logging.ERROR)
 
 from vkv.config import ModelConfig, CacheConfig
 from vkv.engine.block_manager import BlockManager
@@ -76,7 +81,6 @@ def benchmark_hf_default(model, tokenizer, prompt: str) -> tuple[float, float]:
     input_ids = tokenizer.encode(prompt, return_tensors="pt").to(DEVICE)
 
     def run():
-        # TODO: call model.generate() with default settings (no past_key_values override)
         # Return number of generated tokens
         output = model.generate(input_ids, max_new_tokens=MAX_NEW_TOKENS)
         return output.shape[1] - input_ids.shape[1]
@@ -88,7 +92,6 @@ def benchmark_vkv_engine(runner, prompt: str) -> tuple[float, float]:
     """Benchmark vkv-engine generate() with PagedCache."""
 
     def run():
-        # TODO: call runner.generate() and return number of generated tokens
         output = runner.generate(prompt, max_new_tokens=MAX_NEW_TOKENS)
         return len(runner.tokenizer.encode(output))
 
@@ -96,58 +99,38 @@ def benchmark_vkv_engine(runner, prompt: str) -> tuple[float, float]:
 
 
 # ─────────────────────────────────────────────────────────
-# Task 5.2: Concurrent requests — max before OOM
+# Task 5.2: Concurrent requests — throughput at each concurrency level
 # ─────────────────────────────────────────────────────────
 
-def benchmark_max_concurrent_hf(model, tokenizer, prompt: str) -> int:
-    """
-    Find max concurrent requests HF can handle before OOM.
-
-    Strategy: batch multiple prompts together (batch_size > 1).
-    Increase batch_size until OOM.
-    """
-    # TODO: implement batch inference with increasing batch size
-    # Hint: tokenizer(prompts, return_tensors="pt", padding=True) for batching
-    max_batch = 0
-    for batch_size in range(1, 20):
-        try:
-            prompts = [prompt] * batch_size
-            inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(DEVICE)
-            model.generate(**inputs, max_new_tokens=50)
-            max_batch = batch_size
-            torch.cuda.empty_cache()
-        except torch.cuda.OutOfMemoryError:
-            break
-    return max_batch
+BATCH_MAX_TOKENS = 50
 
 
-def benchmark_max_concurrent_vkv(model_cfg, cache_cfg, tokenizer, prompt: str) -> int:
-    """
-    Find max concurrent requests vkv-engine can handle before OOM.
+def benchmark_concurrent_hf(model, tokenizer, prompt: str, batch_size: int) -> tuple[float, float]:
+    """Return (tokens/s, peak_mem_GB) when serving `batch_size` requests in parallel via HF batching."""
+    prompts = [prompt] * batch_size
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(DEVICE)
+    reset_gpu_stats()
+    torch.cuda.synchronize()
+    start = time.perf_counter()
+    output = model.generate(**inputs, max_new_tokens=BATCH_MAX_TOKENS)
+    torch.cuda.synchronize()
+    elapsed = time.perf_counter() - start
+    n_generated = (output.shape[1] - inputs["input_ids"].shape[1]) * batch_size
+    return n_generated / elapsed, get_peak_memory_gb()
 
-    Strategy: submit increasing number of requests to RealLLMEngine.
-    """
-    # TODO: use RealLLMEngine from multi_inference.py
-    # Increase number of prompts until OOM or block exhaustion
-    from examples.multi_inference import RealLLMEngine
-    from vkv.engine.scheduler import SchedulerConfig
 
-    max_concurrent = 0
-    for n in range(1, 20):
-        try:
-            scheduler_cfg = SchedulerConfig(max_num_seqs=n)
-            engine = RealLLMEngine(MODEL_NAME, model_cfg, cache_cfg, scheduler_cfg, device=DEVICE)
-            sp = SamplingParams(max_tokens=50)
-            engine.generate(
-                prompts=[tokenizer.encode(prompt)] * n,
-                sampling_params=sp,
-            )
-            max_concurrent = n
-            del engine
-            torch.cuda.empty_cache()
-        except (torch.cuda.OutOfMemoryError, Exception):
-            break
-    return max_concurrent
+def benchmark_concurrent_vkv(engine, tokenizer, prompt: str, batch_size: int) -> tuple[float, float]:
+    """Return (tokens/s, peak_mem_GB) when serving `batch_size` requests in parallel via vkv-engine."""
+    sp = SamplingParams(max_tokens=BATCH_MAX_TOKENS)
+    prompts = [tokenizer.encode(prompt)] * batch_size
+    reset_gpu_stats()
+    torch.cuda.synchronize()
+    start = time.perf_counter()
+    outputs = engine.generate(prompts=prompts, sampling_params=sp)
+    torch.cuda.synchronize()
+    elapsed = time.perf_counter() - start
+    n_generated = sum(len(o.output_token_ids) for o in outputs)
+    return n_generated / elapsed, get_peak_memory_gb()
 
 
 # ─────────────────────────────────────────────────────────
@@ -189,14 +172,32 @@ def main():
     print(f"\nSpeedup: {speedup:.2f}x")
 
     print("\n" + "=" * 60)
-    print("Task 5.2: Max Concurrent Requests Before OOM")
+    print("Task 5.2: Concurrent Throughput (tokens/s at each batch size)")
     print("=" * 60)
 
-    max_hf = benchmark_max_concurrent_hf(hf_model, tokenizer, prompt)
-    print(f"HF default:   max {max_hf} concurrent requests")
+    import sys, os
+    sys.path.insert(0, os.path.dirname(__file__))
+    from multi_inference import RealLLMEngine
+    from vkv.engine.scheduler import SchedulerConfig
 
-    max_vkv = benchmark_max_concurrent_vkv(model_cfg, cache_cfg, tokenizer, prompt)
-    print(f"vkv-engine:   max {max_vkv} concurrent requests")
+    scheduler_cfg = SchedulerConfig(max_num_seqs=32)
+    engine = RealLLMEngine(MODEL_NAME, model_cfg, cache_cfg, scheduler_cfg, device=DEVICE)
+
+    print(f"{'Batch':>6} | {'HF tok/s':>10} {'HF mem':>8} | {'vkv tok/s':>10} {'vkv mem':>8} | speedup")
+    print("-" * 68)
+    for batch in [1, 2, 4, 8, 16]:
+        try:
+            hf_tps, hf_mem = benchmark_concurrent_hf(hf_model, tokenizer, prompt, batch)
+        except Exception as e:
+            print(f"{batch:>6} | HF OOM: {e}")
+            hf_tps = hf_mem = 0
+        try:
+            vkv_tps, vkv_mem = benchmark_concurrent_vkv(engine, tokenizer, prompt, batch)
+        except Exception as e:
+            print(f"{batch:>6} | vkv OOM: {e}")
+            vkv_tps = vkv_mem = 0
+        speedup = vkv_tps / hf_tps if hf_tps > 0 else 0
+        print(f"{batch:>6} | {hf_tps:>10.1f} {hf_mem:>7.2f}G | {vkv_tps:>10.1f} {vkv_mem:>7.2f}G | {speedup:>5.2f}x")
 
 
 if __name__ == "__main__":
