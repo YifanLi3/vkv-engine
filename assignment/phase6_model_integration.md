@@ -207,14 +207,44 @@ for _ in range(3):
 <a id="part-5-benchmark"></a>
 ## Part 5: Benchmark [进阶]
 
-### Task 5.1: 对比 HF 默认 generate vs vkv-engine
+> **文件**: `examples/benchmark.py`  
+> **运行**: `uv run python examples/benchmark.py`（需要 GPU）
 
-```
-测量：
-  - Throughput (tokens/s)
-  - Memory usage (peak GPU memory)
-  - Max concurrent requests before OOM
-```
+### Background
+
+对比两种 KV cache 方案的实际性能差异：
+
+| | HF 默认 (DynamicCache) | vkv-engine (PagedCache) |
+|---|---|---|
+| 内存分配 | 每步 torch.cat，连续增长 | 预分配 block pool，按需取用 |
+| 并发效率 | 每个请求独占显存 | 共享 block pool |
+| 碎片化 | 高（序列长度不一时浪费） | 低（block 可复用） |
+
+### Task 5.1: 单请求 Throughput 对比
+
+**文件**: `examples/benchmark.py` → `benchmark_hf_default()` 和 `benchmark_vkv_engine()`
+
+测量指标：
+- Throughput：tokens/s（越高越好）
+- Peak GPU memory：GB（越低越好）
+
+**TODO**：`benchmark_hf_default()` 里调用 `model.generate()` 并返回生成的 token 数。
+
+### Task 5.2: 最大并发请求数对比
+
+**文件**: `examples/benchmark.py` → `benchmark_max_concurrent_hf()` 和 `benchmark_max_concurrent_vkv()`
+
+逐步增加并发请求数，直到 OOM，记录最大值。
+
+**TODO**：`benchmark_max_concurrent_hf()` 里用 batched input 测试 HF 并发上限。
+
+### 预期结果
+
+vkv-engine 在以下场景下优势明显：
+- **多请求并发**：共享 block pool 减少碎片，支持更多并发
+- **长序列**：不需要预先分配最大长度的连续显存
+
+单请求 throughput 差距不大（主要瓶颈是模型计算本身）。
 
 ---
 
@@ -240,9 +270,11 @@ uv run pytest tests/test_phase6.py -k "part2" -v
 uv run pytest tests/test_phase6.py -k "part3" -v
 
 # Part 4（需要 GPU）
-uv run pytest tests/test_phase6_part4.py -k "task1" -v
-uv run pytest tests/test_phase6_part4.py -k "task2" -v
+uv run pytest tests/test_phase6.py -k "part4" -v
 
 # 不需要 GPU 的测试
 uv run pytest tests/test_phase6.py -k "cpu" -v
+
+# Part 5 Benchmark（需要 GPU）
+uv run python examples/benchmark.py
 ```

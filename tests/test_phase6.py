@@ -219,3 +219,123 @@ class TestPart3:
             runner.generate("Hello", max_new_tokens=10)
 
         assert mgr.stats.used_blocks == 0
+
+
+# =============================================================================
+# Part 4: End-to-end Inference
+# =============================================================================
+
+MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+
+
+class TestPart4Task1:
+
+    @gpu
+    def test_single_generate_returns_string(self):
+        """generate() should return a non-empty string."""
+        from vkv.engine.real_model_runner import RealModelRunner
+        from vkv.engine.block_manager import BlockManager
+
+        model_cfg = ModelConfig(num_layers=22, num_kv_heads=4, head_dim=64)
+        mgr = BlockManager(model_cfg, CacheConfig(block_size=16, num_gpu_blocks=200, num_cpu_blocks=20), device="cuda")
+        runner = RealModelRunner(MODEL_NAME, mgr, device="cuda")
+
+        output = runner.generate("What is AI?", max_new_tokens=10)
+
+        assert isinstance(output, str)
+        assert len(output) > 0
+
+    @gpu
+    def test_single_generate_max_tokens(self):
+        """Number of generated tokens should not exceed max_new_tokens."""
+        from vkv.engine.real_model_runner import RealModelRunner
+        from vkv.engine.block_manager import BlockManager
+
+        model_cfg = ModelConfig(num_layers=22, num_kv_heads=4, head_dim=64)
+        mgr = BlockManager(model_cfg, CacheConfig(block_size=16, num_gpu_blocks=200, num_cpu_blocks=20), device="cuda")
+        runner = RealModelRunner(MODEL_NAME, mgr, device="cuda")
+
+        max_new_tokens = 5
+        output = runner.generate("Hello", max_new_tokens=max_new_tokens)
+
+        generated_ids = runner.tokenizer.encode(output)
+        assert len(generated_ids) <= max_new_tokens + 5
+
+    @gpu
+    def test_blocks_freed_after_generate(self):
+        """All blocks should be released after generate() completes."""
+        from vkv.engine.real_model_runner import RealModelRunner
+        from vkv.engine.block_manager import BlockManager
+
+        model_cfg = ModelConfig(num_layers=22, num_kv_heads=4, head_dim=64)
+        mgr = BlockManager(model_cfg, CacheConfig(block_size=16, num_gpu_blocks=200, num_cpu_blocks=20), device="cuda")
+        runner = RealModelRunner(MODEL_NAME, mgr, device="cuda")
+
+        runner.generate("Test prompt", max_new_tokens=5)
+
+        assert mgr.stats.used_blocks == 0
+
+
+class TestPart4Task2:
+
+    @gpu
+    def test_multi_request_outputs_count(self):
+        """Submitting N requests should return N outputs."""
+        from examples.multi_inference import RealLLMEngine
+        from vkv.engine.scheduler import SchedulerConfig
+        from vkv.sampling_params import SamplingParams
+
+        model_cfg = ModelConfig(num_layers=22, num_kv_heads=4, head_dim=64)
+        cache_cfg = CacheConfig(block_size=16, num_gpu_blocks=300, num_cpu_blocks=20)
+        scheduler_cfg = SchedulerConfig(max_num_seqs=3)
+
+        engine = RealLLMEngine(MODEL_NAME, model_cfg, cache_cfg, scheduler_cfg, device="cuda")
+        tokenizer = engine.model_runner.tokenizer
+        sp = SamplingParams(max_tokens=10)
+
+        prompts = ["What is AI?", "Hello world.", "Explain KV cache."]
+        outputs = engine.generate(prompts=[tokenizer.encode(p) for p in prompts], sampling_params=sp)
+
+        assert len(outputs) == len(prompts)
+
+    @gpu
+    def test_multi_request_no_memory_leak(self):
+        """All blocks should be freed after each generate() call."""
+        from examples.multi_inference import RealLLMEngine
+        from vkv.engine.scheduler import SchedulerConfig
+        from vkv.sampling_params import SamplingParams
+
+        model_cfg = ModelConfig(num_layers=22, num_kv_heads=4, head_dim=64)
+        cache_cfg = CacheConfig(block_size=16, num_gpu_blocks=300, num_cpu_blocks=20)
+        scheduler_cfg = SchedulerConfig(max_num_seqs=2)
+
+        engine = RealLLMEngine(MODEL_NAME, model_cfg, cache_cfg, scheduler_cfg, device="cuda")
+        tokenizer = engine.model_runner.tokenizer
+        sp = SamplingParams(max_tokens=5)
+
+        for _ in range(3):
+            engine.generate(
+                prompts=[tokenizer.encode("Hello"), tokenizer.encode("Hi there")],
+                sampling_params=sp,
+            )
+            assert engine.block_manager.stats.used_blocks == 0
+
+    @gpu
+    def test_multi_request_output_is_decodable(self):
+        """Each output's token_ids should be decodable to a string."""
+        from examples.multi_inference import RealLLMEngine
+        from vkv.engine.scheduler import SchedulerConfig
+        from vkv.sampling_params import SamplingParams
+
+        model_cfg = ModelConfig(num_layers=22, num_kv_heads=4, head_dim=64)
+        cache_cfg = CacheConfig(block_size=16, num_gpu_blocks=300, num_cpu_blocks=20)
+        scheduler_cfg = SchedulerConfig(max_num_seqs=2)
+
+        engine = RealLLMEngine(MODEL_NAME, model_cfg, cache_cfg, scheduler_cfg, device="cuda")
+        tokenizer = engine.model_runner.tokenizer
+        sp = SamplingParams(max_tokens=10)
+
+        outputs = engine.generate(prompts=[tokenizer.encode("What is AI?")], sampling_params=sp)
+
+        text = tokenizer.decode(outputs[0].output_token_ids)
+        assert isinstance(text, str)

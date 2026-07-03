@@ -45,7 +45,8 @@ class RealLLMEngine(LLMEngine):
 
         # Task 4.2.1: Replace MockModelRunner with RealModelRunner
         self.model_runner = RealModelRunner(
-            # TODO: pass model_name, block_manager, device
+            model_name=model_name,
+            block_manager=BlockManager(model_config, cache_config, device),
         )
 
         # Maintains one PagedCache per active sequence
@@ -76,20 +77,28 @@ class RealLLMEngine(LLMEngine):
 
         if output.is_prefill:
             for seq in output.scheduled_seqs:
-                # TODO: prefill each seq, store PagedCache in self.paged_caches
-                pass
+                paged_cache = self.model_runner.prefill(seq.token_ids[:seq.num_prompt_tokens])
+                self.paged_caches[seq.seq_id] = paged_cache
             return []
         else:
             token_ids = []
             for seq in output.scheduled_seqs:
-                # TODO: decode each seq
                 # Hint: seq.token_ids[-1] is the last generated token
-                pass
+                last_token_id = seq.token_ids[-1]
+                paged_cache = self.paged_caches[seq.seq_id]
+                logits, paged_cache = self.model_runner.decode_step(last_token_id, paged_cache)
+                temperature = seq.sampling_params.temperature if seq.sampling_params else 1.0
+                token_id = self.model_runner.sample(logits, temperature)
+                token_ids.append(token_id)
 
             finished_seqs = self.scheduler.postprocess(output.scheduled_seqs, token_ids)
             for seq in finished_seqs:
-                # TODO: free PagedCache and collect RequestOutput
-                pass
+                self.paged_caches[seq.seq_id].free()
+                self.outputs[seq.seq_id] = RequestOutput(
+                    seq_id=seq.seq_id,
+                    prompt_token_ids=seq.token_ids[:seq.num_prompt_tokens],
+                    output_token_ids=seq.token_ids[seq.num_prompt_tokens:],
+                )
 
             return [self.outputs[seq.seq_id] for seq in finished_seqs]
 
@@ -97,13 +106,15 @@ class RealLLMEngine(LLMEngine):
 def main():
     # Task 4.2.2: Initialize configs
     model_cfg = ModelConfig(
-        # TODO: TinyLlama parameters
+        num_layers=22,
+        num_kv_heads=4,
+        head_dim=64,
     )
     cache_cfg = CacheConfig(
-        # TODO
+        num_gpu_blocks=500,
+        num_cpu_blocks=50,
     )
     scheduler_cfg = SchedulerConfig(
-        # TODO: set max_seqs_in_flight and other parameters
     )
 
     engine = RealLLMEngine(
