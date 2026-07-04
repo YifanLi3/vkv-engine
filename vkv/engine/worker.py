@@ -18,6 +18,7 @@ import torch.distributed as dist
 from vkv.config import ModelConfig, CacheConfig
 from vkv.engine.scheduler import SchedulerConfig
 from vkv.sampling_params import SamplingParams
+from vkv.engine.real_llm_engine import RealLLMEngine
 
 
 class Worker:
@@ -49,7 +50,6 @@ class Worker:
         """
         Initialize the worker: set device, join process group, load engine.
 
-        TODO:
         1. Store self.rank, self.world_size
         2. Set torch.cuda.set_device(rank) so this process uses GPU `rank`
         3. Set os.environ["MASTER_ADDR"] and MASTER_PORT
@@ -59,7 +59,24 @@ class Worker:
         5. Load RealLLMEngine on device=f"cuda:{rank}"
         6. Store tokenizer reference: self.tokenizer = self.engine.model_runner.tokenizer
         """
-        raise NotImplementedError("TODO: Implement Worker.__init__")
+        self.rank = rank
+        self.world_size = world_size
+        torch.cuda.set_device(rank)
+        os.environ["MASTER_ADDR"] = master_addr
+        os.environ["MASTER_PORT"] = master_port
+        dist.init_process_group(
+            backend="nccl", 
+            rank=rank, 
+            world_size=world_size,
+        )
+        self.engine = RealLLMEngine(
+            model_name=model_name,
+            model_config=model_config,
+            cache_config=cache_config,
+            scheduler_config=scheduler_config,
+            device=f'cuda:{rank}'
+        )
+        self.tokenizer = self.engine.model_runner.tokenizer
 
     def execute(
         self,
@@ -76,13 +93,12 @@ class Worker:
         Returns:
             List of generated strings (same length as prompts)
 
-        TODO:
         1. Tokenize each prompt to token IDs
         2. Call self.engine.generate(prompts=..., sampling_params=SamplingParams(max_tokens=...))
         3. Decode each output with self.tokenizer.decode(..., skip_special_tokens=True)
         4. Return list of strings
         """
-        raise NotImplementedError("TODO: Implement Worker.execute")
+        input_ids = self.tokenizer.encode(prompts)
 
     def barrier(self):
         """Synchronize all workers. Wraps dist.barrier()."""
@@ -90,10 +106,8 @@ class Worker:
 
     def shutdown(self):
         """Clean up the process group.
-
-        TODO: Call dist.destroy_process_group()
         """
-        raise NotImplementedError("TODO: Implement Worker.shutdown")
+        dist.destroy_process_group()
 
     @property
     def is_master(self) -> bool:

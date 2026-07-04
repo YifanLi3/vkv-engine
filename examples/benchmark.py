@@ -175,9 +175,7 @@ def main():
     print("Task 5.2: Concurrent Throughput (tokens/s at each batch size)")
     print("=" * 60)
 
-    import sys, os
-    sys.path.insert(0, os.path.dirname(__file__))
-    from multi_inference import RealLLMEngine
+    from vkv.engine.real_llm_engine import RealLLMEngine
     from vkv.engine.scheduler import SchedulerConfig
 
     scheduler_cfg = SchedulerConfig(max_num_seqs=32)

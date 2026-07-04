@@ -25,12 +25,10 @@ def worker(gpu_id: int, prompts_chunk: List[str], result_queue: mp.Queue):
     Runs on one GPU. Loads its own model and processes a chunk of prompts.
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import torch
 
     # Delayed import so CUDA_VISIBLE_DEVICES takes effect
-    from multi_inference import RealLLMEngine
+    from vkv.engine.real_llm_engine import RealLLMEngine
     from transformers import AutoTokenizer
 
     print(f"[GPU {gpu_id}] loading model...")

@@ -281,7 +281,7 @@ class TestPart4Task2:
     @gpu
     def test_multi_request_outputs_count(self):
         """Submitting N requests should return N outputs."""
-        from examples.multi_inference import RealLLMEngine
+        from vkv.engine.real_llm_engine import RealLLMEngine
         from vkv.engine.scheduler import SchedulerConfig
         from vkv.sampling_params import SamplingParams
 
@@ -301,7 +301,7 @@ class TestPart4Task2:
     @gpu
     def test_multi_request_no_memory_leak(self):
         """All blocks should be freed after each generate() call."""
-        from examples.multi_inference import RealLLMEngine
+        from vkv.engine.real_llm_engine import RealLLMEngine
         from vkv.engine.scheduler import SchedulerConfig
         from vkv.sampling_params import SamplingParams
 
@@ -323,7 +323,7 @@ class TestPart4Task2:
     @gpu
     def test_multi_request_output_is_decodable(self):
         """Each output's token_ids should be decodable to a string."""
-        from examples.multi_inference import RealLLMEngine
+        from vkv.engine.real_llm_engine import RealLLMEngine
         from vkv.engine.scheduler import SchedulerConfig
         from vkv.sampling_params import SamplingParams
 
