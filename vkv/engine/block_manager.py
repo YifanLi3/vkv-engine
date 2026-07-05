@@ -68,6 +68,7 @@ class BlockManager:
         model_config: ModelConfig,
         cache_config: CacheConfig,
         device: str = "cpu",
+        layer_device_map: Optional[Dict[int, str]] = None,
     ):
         """
         Pre-allocate the GPU (and CPU) memory pool.
@@ -103,14 +104,21 @@ class BlockManager:
 
         self.num_cpu_blocks = cache_config.num_cpu_blocks
 
+        # Layer -> device mapping. If not provided, all layers share `device`.
+        # For Pipeline Parallelism, pass {layer_idx: "cuda:N"} so each layer's
+        # KV cache lives on the same GPU as that layer's weights.
+        self.layer_device_map = layer_device_map or {i: device for i in range(self.num_layers)}
+
         # self.gpu_key_cache: List[torch.Tensor] = [...]   # len = num_layers
         # self.gpu_value_cache: List[torch.Tensor] = [...]
         self.gpu_key_cache = [torch.zeros(self.num_gpu_blocks, self.model_config.num_kv_heads,
                             self.block_size, self.model_config.head_dim,
-                            dtype=self.model_config.dtype, device=device) for _ in range(self.num_layers)]
+                            dtype=self.model_config.dtype, device=self.layer_device_map[i])
+                            for i in range(self.num_layers)]
         self.gpu_value_cache = [torch.zeros(self.num_gpu_blocks, self.model_config.num_kv_heads,
                             self.block_size, self.model_config.head_dim,
-                            dtype=self.model_config.dtype, device=device) for _ in range(self.num_layers)]
+                            dtype=self.model_config.dtype, device=self.layer_device_map[i])
+                            for i in range(self.num_layers)]
 
         self.cpu_key_cache = [torch.zeros(self.num_cpu_blocks, self.model_config.num_kv_heads,
                             self.block_size, self.model_config.head_dim,

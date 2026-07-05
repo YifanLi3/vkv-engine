@@ -150,9 +150,94 @@ def main():
 <a id="part-2-pp"></a>
 ## Part 2: Pipeline Parallelism [Level 2]
 
-> Part 1 完成后再展开细节。
+> **文件**: `vkv/engine/pipeline_runner.py`, `examples/pipeline_inference.py`
+> **测试**: `uv run pytest tests/test_phase7.py -k "part2" -v`
+> **需要**: >= 2 张 GPU
 
-**概览**：
-- 用 `accelerate` 的 `device_map` 手动把不同层放到不同 GPU
-- 前向传播时 activations 自动跨 GPU 传递
-- 挑战：KV cache 每层在不同 GPU 上，需要修改 `BlockManager` 感知设备
+### Background
+
+Part 1 是 **DP**（每卡完整模型独立处理）。Part 2 是 **PP**（不同层放到不同卡，一个请求跨卡流转）。
+
+**为什么需要 PP？**
+
+- 模型比单卡显存大（比如 Llama 70B 需要 140GB FP16，A100 80GB 单卡装不下）
+- PP 把 32 层分到 2 张卡：layer 0-15 放 GPU 0，layer 16-31 放 GPU 1
+- 一个请求：GPU 0 算前一半 → activation 传到 GPU 1 → 算后一半
+
+### 核心挑战：KV cache 也要跟随分片
+
+每层的 attention 需要读写自己那层的 KV。如果 layer 5 在 GPU 0，layer 5 的 KV 必须也在 GPU 0，否则 attention 时 Q/K/V 不在同一张卡上 → CUDA device mismatch。
+
+需要的改动：
+1. **`BlockManager`** 支持 `layer_device_map: Dict[int, str]`，每层的 `gpu_key_cache[layer]` 在对应的 device 上
+2. **模型加载**用 `accelerate` 的 `device_map` 手动切分层，activations 自动跨卡传（HF 会插入 hook）
+3. **`PagedCache.update`** 不用改，因为它通过 `block_manager.write_kv(block_id, layer, slot, K, V)` 写入，KV 在哪张卡由 BlockManager 决定
+
+### Task 2.1: 扩展 `BlockManager` 支持 per-layer device
+
+**文件**: `vkv/engine/block_manager.py`
+
+修改 `__init__` 签名，加一个可选参数：
+```python
+def __init__(self, model_config, cache_config,
+             device: str = "cpu",
+             layer_device_map: Optional[Dict[int, str]] = None):
+```
+
+- 如果 `layer_device_map is None`：所有层用 `device`（保持向后兼容）
+- 如果提供：`gpu_key_cache[i]` 创建时用 `device=layer_device_map[i]`
+
+**Hint**：只需要改 `torch.zeros(...)` 的 `device` 参数。
+
+### Task 2.2: 实现 `PipelineParallelRunner`
+
+**文件**: `vkv/engine/pipeline_runner.py`
+
+继承 `RealModelRunner` 或从零写，关键点：
+
+```python
+class PipelineParallelRunner(RealModelRunner):
+    def __init__(self, model_name, block_manager, num_gpus, ...):
+        # 1. 计算 layer -> device 映射
+        num_layers = cfg.num_hidden_layers
+        layers_per_gpu = num_layers // num_gpus
+        device_map = {
+            "model.embed_tokens": 0,
+            **{f"model.layers.{i}": (i // layers_per_gpu)
+               for i in range(num_layers)},
+            "model.norm": num_gpus - 1,
+            "lm_head": num_gpus - 1,
+        }
+
+        # 2. 加载模型时传入 device_map
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map=device_map,
+        ).eval()
+
+        # 3. block_manager 需要提前配好 layer_device_map
+```
+
+### Task 2.3: 端到端 PP 推理 demo
+
+**文件**: `examples/pipeline_inference.py`
+
+单进程跑（PP 只需一个 Python 进程，因为 HF 用 hook 自动跨卡传 activation，不像 TP 需要多进程通信）：
+
+```python
+runner = PipelineParallelRunner(
+    model_name=MODEL_NAME,
+    num_gpus=2,
+    ...
+)
+output = runner.generate("What is AI?", max_new_tokens=30)
+```
+
+### Task 2.4: 观察点
+
+跑起来后可以用 `nvidia-smi` 观察：
+- 两张卡都有显存占用（模型分片）
+- 推理时两张卡都在忙（activation 流水线）
+
+**性能**：单请求 PP **不会更快**（甚至更慢，因为跨卡传 activation 有开销），但可以跑更大的模型。真正提速需要**多请求 + micro-batching**（把 batch 切成小片，让 pipeline 各段并行工作），这是 Phase 8 的内容。

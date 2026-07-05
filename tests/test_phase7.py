@@ -15,6 +15,7 @@ import torch
 import torch.multiprocessing as mp
 
 from vkv.config import ModelConfig, CacheConfig
+from vkv.engine.block_manager import BlockManager
 from vkv.engine.scheduler import SchedulerConfig
 
 MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
@@ -105,3 +106,69 @@ class TestPart1:
             assert len(outputs) == 1
             assert isinstance(outputs[0], str)
             assert len(outputs[0]) > 0
+
+
+# ─────────────────────────────────────────────────────────
+# Part 2: Pipeline Parallelism Tests
+# ─────────────────────────────────────────────────────────
+
+class TestPart2:
+
+    def test_device_map_split(self):
+        """Layers should be evenly split across GPUs."""
+        from vkv.engine.pipeline_runner import PipelineParallelRunner
+
+        # 22 layers on 2 GPUs → 11 each
+        m = PipelineParallelRunner._build_device_map(num_layers=22, num_gpus=2)
+        # First half on GPU 0, second half on GPU 1
+        assert m["model.layers.0"] == 0
+        assert m["model.layers.10"] == 0
+        assert m["model.layers.11"] == 1
+        assert m["model.layers.21"] == 1
+        # Embedding on GPU 0, norm/lm_head on last GPU
+        assert m["model.embed_tokens"] == 0
+        assert m["model.norm"] == 1
+        assert m["lm_head"] == 1
+
+    def test_block_manager_per_layer_device(self):
+        """BlockManager should place each layer's tensor on the requested device."""
+        model_cfg = ModelConfig(num_layers=4, num_kv_heads=4, head_dim=64)
+        cache_cfg = CacheConfig(block_size=16, num_gpu_blocks=10, num_cpu_blocks=4)
+
+        # Fake mapping for CPU testing (real PP requires GPU)
+        layer_device_map = {0: "cpu", 1: "cpu", 2: "cpu", 3: "cpu"}
+        mgr = BlockManager(model_cfg, cache_cfg, device="cpu",
+                           layer_device_map=layer_device_map)
+        # Verify each layer's tensor is on the expected device
+        for i in range(4):
+            assert mgr.gpu_key_cache[i].device.type == "cpu"
+            assert mgr.gpu_value_cache[i].device.type == "cpu"
+
+    @has_two_gpus
+    def test_pipeline_inference_end_to_end(self):
+        """Model layers split across 2 GPUs, generate should return a string."""
+        from transformers import AutoConfig
+        from vkv.engine.pipeline_runner import PipelineParallelRunner
+
+        hf_cfg = AutoConfig.from_pretrained(MODEL_NAME)
+        model_cfg = ModelConfig(
+            num_layers=hf_cfg.num_hidden_layers,
+            num_kv_heads=hf_cfg.num_key_value_heads,
+            head_dim=hf_cfg.hidden_size // hf_cfg.num_attention_heads,
+        )
+        cache_cfg = CacheConfig(block_size=16, num_gpu_blocks=200, num_cpu_blocks=20)
+
+        hf_device_map = PipelineParallelRunner._build_device_map(
+            model_cfg.num_layers, num_gpus=2
+        )
+        layer_device_map = {
+            i: f"cuda:{hf_device_map[f'model.layers.{i}']}"
+            for i in range(model_cfg.num_layers)
+        }
+        mgr = BlockManager(model_cfg, cache_cfg, device="cuda:0",
+                           layer_device_map=layer_device_map)
+        runner = PipelineParallelRunner(MODEL_NAME, mgr, num_gpus=2)
+
+        output = runner.generate("Hello", max_new_tokens=5)
+        assert isinstance(output, str)
+        assert len(output) > 0
