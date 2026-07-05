@@ -36,6 +36,7 @@ class RealLLMEngine(LLMEngine):
         self.model_runner = RealModelRunner(
             model_name=model_name,
             block_manager=BlockManager(model_config, cache_config, device),
+            device=device,
         )
 
         # One PagedCache per active sequence

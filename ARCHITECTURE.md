@@ -169,6 +169,87 @@ loop while not scheduler.is_finished():
               self.outputs[seq.seq_id] = RequestOutput(...)
 ```
 
+### 3.3 完整流转：从 Worker.execute() 到 RequestOutput
+
+```
+Worker.execute(prompts=["What is AI?"])
+      │
+      │ tokenize
+      ▼
+input_ids_list = [[1, 1724, 338, 319, 29973]]
+      │
+      ▼
+engine.generate(prompts=input_ids_list, sampling_params=sp)
+      │
+      │ for each: add_request(token_ids, sp)
+      │            → Sequence(seq_id, token_ids, block_table=[], status=WAITING)
+      │            → scheduler.waiting.append(seq)
+      ▼
+loop while not scheduler.is_finished():
+      │
+      │ step()
+      │
+      ├── ROUND 1: PREFILL
+      │      scheduler.schedule() → is_prefill=True, scheduled_seqs=[seq0]
+      │        · 分配 block: seq.block_table = [3]
+      │        · seq.status = RUNNING (从 waiting 移到 running)
+      │
+      │      runner.prefill([1, 1724, 338, 319, 29973])
+      │        · new PagedCache(block_manager, num_layers, ...)
+      │        · model.forward(input_tensor, past_key_values=paged_cache)
+      │          ├── layer 0: paged_cache.update(K, V, layer_idx=0)
+      │          │     ├── for i in range(5): write_kv(block, layer, slot, K, V)
+      │          │     └── return gather_kv(block_table, total_tokens, layer)
+      │          ├── layer 1: paged_cache.update(K, V, layer_idx=1)
+      │          └── ... layer 21 (last: update _seq_length=5)
+      │        · return paged_cache
+      │      paged_caches[seq.seq_id] = paged_cache
+      │
+      ├── ROUND 2: DECODE (repeat until finished)
+      │      scheduler.schedule() → is_prefill=False, scheduled_seqs=[seq0]
+      │
+      │      last_token_id = seq.token_ids[-1]  # 29973
+      │      logits, cache = runner.decode_step(29973, paged_cache)
+      │        · input_tensor = [[29973]]  shape [1, 1]
+      │        · model.forward(input_tensor, past_key_values=paged_cache)
+      │          每层 update() 只写 1 个 slot (new_tokens=1)
+      │        · logits = output.logits[:, -1, :]  shape [1, vocab_size]
+      │      token_id = runner.sample(logits, temperature)  # 例如 29915
+      │
+      │      scheduler.postprocess([seq0], [29915])
+      │        · seq.token_ids.append(29915)  → [..., 29915]
+      │        · check: EOS or len >= max_tokens?
+      │        · if finished: seq.status = FINISHED, 从 running 移除
+      │        · return finished_seqs
+      │
+      │      for seq in finished_seqs:
+      │        · paged_cache.free() → block_manager.free([3]), block_table=[]
+      │        · outputs[seq.seq_id] = RequestOutput(seq_id, prompt_ids, output_ids)
+      │
+      ▼
+return sorted(outputs.values(), key=seq_id)  # List[RequestOutput]
+      │
+      ▼
+Worker.execute 收到 outputs
+      │
+      │ tokenizer.decode(o.output_token_ids, skip_special_tokens=True)
+      ▼
+return ["The answer is..."]  # List[str]
+```
+
+### 3.4 关键状态变化时间线
+
+以 prompt `[1,1724,338,319,29973]` (5 tokens)、生成 3 tokens 为例：
+
+| 时刻 | `seq.token_ids` | `seq.block_table` | `seq.status` | `paged_cache._seq_length` |
+|---|---|---|---|---|
+| `add_request` 后 | `[1,1724,338,319,29973]` | `[]` | WAITING | (未创建) |
+| Prefill 结束 | 同上 | `[3]` | RUNNING | 5 |
+| Decode 1 | `[..., 29915]` | `[3]` | RUNNING | 6 |
+| Decode 2 | `[..., 29915, 319]` | `[3]` | RUNNING | 7 |
+| Decode 3 (EOS) | `[..., 29915, 319, 2]` | `[3]` | FINISHED | 8 |
+| `free()` 后 | (清除) | `[]` | FINISHED | 0 |
+
 ---
 
 ## 4. 面试可能问的点 & 关键答案

@@ -58,7 +58,7 @@ class RealModelRunner:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=dtype,
-            device_map="auto",
+            device_map={"":device}
         ).eval()
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model_config = self._extract_model_config()

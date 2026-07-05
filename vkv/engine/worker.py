@@ -19,6 +19,7 @@ from vkv.config import ModelConfig, CacheConfig
 from vkv.engine.scheduler import SchedulerConfig
 from vkv.sampling_params import SamplingParams
 from vkv.engine.real_llm_engine import RealLLMEngine
+import os
 
 
 class Worker:
@@ -64,10 +65,13 @@ class Worker:
         torch.cuda.set_device(rank)
         os.environ["MASTER_ADDR"] = master_addr
         os.environ["MASTER_PORT"] = master_port
+        os.environ.setdefault("NCCL_IB_DISABLE", "1")
+        os.environ.setdefault("NCCL_SOCKET_IFNAME", "lo")
         dist.init_process_group(
-            backend="nccl", 
-            rank=rank, 
+            backend="nccl",
+            rank=rank,
             world_size=world_size,
+            device_id=torch.device(f"cuda:{rank}"),
         )
         self.engine = RealLLMEngine(
             model_name=model_name,
@@ -98,7 +102,18 @@ class Worker:
         3. Decode each output with self.tokenizer.decode(..., skip_special_tokens=True)
         4. Return list of strings
         """
-        input_ids = self.tokenizer.encode(prompts)
+        sp = SamplingParams(max_tokens=30)
+        outputs = self.engine.generate(
+            prompts=[self.tokenizer.encode(p) for p in prompts],
+            sampling_params=sp,
+        )
+
+        list_of_strings = []
+        for out in outputs:
+            s = self.tokenizer.decode(out.output_token_ids, skip_special_tokens=True)
+            list_of_strings.append(s)
+
+        return list_of_strings
 
     def barrier(self):
         """Synchronize all workers. Wraps dist.barrier()."""
