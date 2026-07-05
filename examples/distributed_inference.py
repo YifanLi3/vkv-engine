@@ -15,6 +15,7 @@ import sys
 from typing import List
 
 import torch
+import torch.distributed as dist
 import torch.multiprocessing as mp
 
 # Allow importing from vkv/ when spawned as a separate process
@@ -29,21 +30,16 @@ MAX_NEW_TOKENS = 30
 
 def worker_main(rank: int, world_size: int, prompts: List[str]):
     """
-    Entry point for each spawned worker process.
+    Master-Worker entry point.
 
-    Rank 0 is the master. Currently every rank runs the same generation
-    on its own shard (simple DP). Rank 0 also prints all results after
-    collecting them via a barrier.
+    - Rank 0 (master):
+        holds original prompts, broadcasts to all ranks,
+        gathers results, prints them.
+    - Other ranks (workers):
+        receive broadcasted prompts, run their shard, send results back.
 
-    TODO (Task 1.3):
-    1. Create Worker(rank, world_size, MODEL_NAME, model_cfg, cache_cfg)
-    2. Slice `prompts` into this worker's shard:
-         shard = prompts[rank::world_size]
-    3. Call worker.execute(shard, max_tokens=MAX_NEW_TOKENS)
-    4. Print results with a rank prefix, e.g. f"[GPU {rank}] {output}"
-    5. worker.barrier() before shutdown to prevent one process exiting
-       while others still need collective ops
-    6. worker.shutdown()
+    Uses `dist.broadcast_object_list` / `dist.gather_object` for
+    Python object communication (internally uses pickle + NCCL).
     """
     from vkv.engine.worker import Worker
 
@@ -51,8 +47,41 @@ def worker_main(rank: int, world_size: int, prompts: List[str]):
     cache_cfg = CacheConfig(block_size=16, num_gpu_blocks=300, num_cpu_blocks=20)
     scheduler_cfg = SchedulerConfig(max_num_seqs=8)
 
-    # TODO: fill in the worker execution logic per docstring
-    raise NotImplementedError("TODO: Implement worker_main")
+    worker = Worker(
+        rank,
+        world_size,
+        MODEL_NAME,
+        model_cfg,
+        cache_cfg,
+        scheduler_cfg,
+    )
+
+    # --- 1. Broadcast prompts from rank 0 to all ranks ---
+    # Only rank 0 holds real prompts; other ranks pass None as placeholder.
+    obj_list = [prompts if rank == 0 else None]
+    dist.broadcast_object_list(obj_list, src=0)
+    all_prompts = obj_list[0]
+
+    # --- 2. Each rank runs its own shard ---
+    shard = all_prompts[rank::world_size]
+    outputs = worker.execute(shard, max_tokens=MAX_NEW_TOKENS)
+
+    # --- 3. Gather results back to rank 0 ---
+    gathered = [None] * world_size if rank == 0 else None
+    dist.gather_object(outputs, gathered, dst=0)
+
+    # --- 4. Only rank 0 prints ---
+    if rank == 0:
+        print("\n" + "=" * 60)
+        print("Results")
+        print("=" * 60)
+        for r, results in enumerate(gathered):
+            r_shard = all_prompts[r::world_size]
+            for prompt, output in zip(r_shard, results):
+                print(f"[GPU {r}] {prompt}\n         -> {output}")
+
+    worker.barrier()
+    worker.shutdown()
 
 
 def main():
