@@ -27,7 +27,6 @@ def main():
         f"Need at least {NUM_GPUS} GPUs, found {torch.cuda.device_count()}"
 
     # ─── Task 2.3.1: derive ModelConfig from HF config ───
-    # TODO: peek AutoConfig, build ModelConfig with num_layers/num_kv_heads/head_dim
     hf_cfg = AutoConfig.from_pretrained(MODEL_NAME)
     model_cfg = ModelConfig(
         num_layers=hf_cfg.num_hidden_layers,

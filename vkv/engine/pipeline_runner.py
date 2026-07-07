@@ -59,39 +59,53 @@ class PipelineParallelRunner(RealModelRunner):
         Important: we deliberately do NOT call super().__init__(),
         because RealModelRunner uses `.to(device)` which conflicts with device_map.
 
-        1. Read the HF config to know num_layers:
-             cfg = AutoConfig.from_pretrained(model_name)
-             num_layers = cfg.num_hidden_layers
+        Steps:
+        1. Peek at model config to know num_layers (before loading full weights)
+        2. Compute device_map: which layer -> which GPU
+        3. Load model with HF's device_map
+        4. Store references (block_manager, block_size, model_config, ...)
 
-        2. Compute the HF device_map (which module string -> which GPU int) using
-             self._build_device_map(num_layers, num_gpus)
-
-        3. Compute layer_device_map (int -> "cuda:N") for the BlockManager sanity check:
-             layer_device_map = {
-                 i: f"cuda:{hf_device_map[f'model.layers.{i}']}"
-                 for i in range(num_layers)
-             }
-           If block_manager.layer_device_map != layer_device_map, raise ValueError.
-
-        4. Store attributes:
-             self.dtype = dtype
-             self.block_manager = block_manager
-             self.block_size = block_manager.block_size
-             self.device = "cuda:0"    # reference device for input tensors
-
-        5. Load the model with device_map (NOT .to()):
-             self.model = AutoModelForCausalLM.from_pretrained(
-                 model_name,
-                 torch_dtype=dtype,
-                 device_map=hf_device_map,
-             ).eval()
-
-        6. Load tokenizer and extract ModelConfig:
-             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-             self.model_config = self._extract_model_config()
+        Note: unlike RealModelRunner, we CANNOT reuse its __init__ directly,
+        because that calls `.to(device)` which conflicts with device_map.
         """
         cfg = AutoConfig.from_pretrained(model_name)
         num_layers = cfg.num_hidden_layers
+
+        self.device_map = self._build_device_map(num_layers, num_gpus)
+        self.layer_device_map = {
+            i: f"cuda:{self.device_map[f'model.layers.{i}']}"
+            for i in range(num_layers)
+        }
+
+        if block_manager.layer_device_map != self.layer_device_map:
+            raise ValueError(
+                "block_manager.layer_device_map does not match this runner's "
+                "device split. Create BlockManager with the same layer_device_map."
+            )
+
+        self.dtype = dtype
+        self.block_manager = block_manager
+        self.block_size = block_manager.block_size
+        self.device = "cuda:0"
+
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map=self.device_map
+        ).eval()
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model_config = self._extract_model_config()
+
+        # DEBUG: verify HF hooks
+        
+        #for name, module in self.model.named_modules():
+        #    if hasattr(module, "_hf_hook"):
+        #        print(f"[DEUBG] {name}: {module._hf_hook.execution_device}")
+
+        # DEBUG: verify layers 10 and 11 are on different devices
+        print(f"[DEUBG] layer 10 device: {self.model.model.layers[10]._hf_hook.execution_device}")
+        print(f"[DEUBG] layer 11 device: {self.model.model.layers[11]._hf_hook.execution_device}")
 
     @staticmethod
     def _build_device_map(num_layers: int, num_gpus: int) -> Dict[str, int]:
