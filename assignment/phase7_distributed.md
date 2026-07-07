@@ -1,77 +1,78 @@
 # Phase 7: Distributed Inference
 
-> **预计用时**: 10-15 小时 | **难度**: ★★★★★
-> **前置知识**: Phase 6 完成
-> **需要**: 至少 2 张 GPU（推荐同一节点）
-> **新增依赖**: `torch.distributed`（PyTorch 内置）
+> **Est. time**: 10–15 hours | **Difficulty**: ★★★★★
+> **Prerequisites**: Phase 6 done
+> **Requires**: at least 2 GPUs (same node recommended)
+> **New dependency**: `torch.distributed` (built into PyTorch)
 
 ---
 
-## 目录
+## Table of Contents
 
-- [Part 0: Background — 为什么需要分布式推理](#part-0-background)
+- [Part 0: Background — why we need distributed inference](#part-0-background)
 - [Part 1: DDP Worker Foundation (Level 1)](#part-1-ddp)
 - [Part 2: Pipeline Parallelism (Level 2)](#part-2-pp)
 
 ---
 
 <a id="part-0-background"></a>
-## Part 0: Background — 分布式推理的三种范式
+## Part 0: Background — three paradigms of distributed inference
 
 ### Data Parallelism (DP)
 
-每张 GPU 一份**完整模型**，处理**不同的请求**。
+Each GPU holds a **full copy of the model** and handles **different requests**.
 
 ```
-GPU 0: [Full Model] ← request 1, 2, 3
-GPU 1: [Full Model] ← request 4, 5, 6
+GPU 0: [Full Model] ← requests 1, 2, 3
+GPU 1: [Full Model] ← requests 4, 5, 6
 ```
 
-**适用场景**：模型能装单卡，想提高 throughput。
+**Use case**: model fits on a single card; you want more throughput.
 
 ### Pipeline Parallelism (PP)
 
-**不同的层放到不同 GPU**，一个请求依次流过。
+**Different layers on different GPUs**; a request flows through them in order.
 
 ```
-GPU 0: layer 0-10 ─→ GPU 1: layer 11-21
+GPU 0: layers 0-10 ─→ GPU 1: layers 11-21
 ```
 
-**适用场景**：模型层数多，单卡装不下但单层能装下。
+**Use case**: the model has many layers, single-GPU memory can't fit the whole thing, but a single layer fits.
 
 ### Tensor Parallelism (TP)
 
-**每一层的权重切分**到多卡，各卡并行算一部分。需要 all-reduce。
+**Split each layer's weights** across GPUs; each card computes part in parallel. Requires all-reduce.
 
 ```
 GPU 0: q_proj[0:half]  ─┐
-                        ├─ all-reduce → 合并输出
+                        ├─ all-reduce → merged output
 GPU 1: q_proj[half:]   ─┘
 ```
 
-**适用场景**：单层参数太大（如 70B/175B 模型）。
+**Use case**: a single layer's parameters are too big (e.g. 70B / 175B models).
 
-Phase 7 实现 DP (Level 1) 和 PP (Level 2)。TP 留给 Phase 8+。
+Phase 7 implements DP (Level 1) and PP (Level 2). TP is left for Phase 8+.
 
 ---
 
 <a id="part-1-ddp"></a>
 ## Part 1: DDP Worker Foundation [Level 1]
 
-> **文件**: `vkv/engine/worker.py`, `examples/distributed_inference.py`
-> **测试**: `uv run pytest tests/test_phase7.py -k "part1" -v`
+> **Files**: `vkv/engine/worker.py`, `examples/distributed_inference.py`
+> **Tests**: `uv run pytest tests/test_phase7.py -k "part1" -v`
 
 ### Background
 
-Phase 6 的 `examples/data_parallel.py` 用 Python multiprocessing + Queue 做 DP，够用但不规范。工业界（PyTorch/DeepSpeed/vLLM）都用 `torch.distributed` + NCCL：
+Phase 6's `examples/data_parallel.py` uses Python `multiprocessing` + `Queue` for DP.
+It works, but production stacks (PyTorch/DeepSpeed/vLLM) all use `torch.distributed` + NCCL:
 
-- **性能**：NCCL 直接在 GPU 内存间通信，比 CPU 中转的 Queue 快
-- **可扩展**：将来加 PP/TP 时直接复用 process group
-- **对齐工业实践**：所有分布式训练/推理框架都基于这套 API
+- **Performance**: NCCL communicates directly between GPU memories, much faster than CPU-mediated queues
+- **Extensibility**: PP/TP later can reuse the same process group
+- **Aligned with industry practice**: every serious distributed training/inference framework builds on this API
 
-### Task 1.1: 实现 `Worker` 类
+### Task 1.1: Implement the `Worker` class
 
-**文件**: `vkv/engine/worker.py`
+**File**: `vkv/engine/worker.py`
 
 ```python
 class Worker:
@@ -103,39 +104,39 @@ class Worker:
         pass
 ```
 
-### Task 1.2: 实现 Master-Worker 分发
+### Task 1.2: Implement master–worker dispatch
 
-**文件**: `examples/distributed_inference.py`
+**File**: `examples/distributed_inference.py`
 
-Rank 0 作为 master：
-- 接收用户请求
-- 按 rank 分片
-- 用 `dist.scatter` / `dist.broadcast` 发给各 worker
+Rank 0 acts as the master:
+- Receives user requests
+- Shards by rank
+- Uses `dist.scatter` / `dist.broadcast` to send them to each worker
 
-其他 rank 作为 worker：
-- 接收自己的请求
-- 本地推理
-- 用 `dist.gather` 把结果返回 rank 0
+Other ranks act as workers:
+- Receive their own requests
+- Run local inference
+- Use `dist.gather` to return results to rank 0
 
-**核心 API**:
+**Core API**:
 ```python
 import torch.distributed as dist
 
 dist.init_process_group("nccl", rank=rank, world_size=world_size)
-dist.barrier()          # 全员同步
-dist.broadcast(tensor, src=0)   # 从 rank 0 广播
-dist.all_gather(...)    # 全员收集
+dist.barrier()                    # global sync
+dist.broadcast(tensor, src=0)     # broadcast from rank 0
+dist.all_gather(...)              # gather from everyone
 ```
 
-**注意**：`torch.distributed` 只能传 tensor，不能直接传字符串。需要用两步：
-1. 主进程 tokenize，得到 token id tensor
-2. broadcast tensor 到各 worker
-3. worker 推理返回 tensor
-4. 主进程 decode 回文字
+**Note**: `torch.distributed` transfers tensors, not raw strings. Two-step trick:
+1. Master tokenizes → token id tensor
+2. Broadcast tensor to workers
+3. Workers infer, return tensors
+4. Master decodes back to text
 
-### Task 1.3: 启动脚本
+### Task 1.3: Launcher script
 
-用 `torch.multiprocessing.spawn` 启动 N 个 worker：
+Start N workers with `torch.multiprocessing.spawn`:
 
 ```python
 import torch.multiprocessing as mp
@@ -150,55 +151,57 @@ def main():
 <a id="part-2-pp"></a>
 ## Part 2: Pipeline Parallelism [Level 2]
 
-> **文件**: `vkv/engine/pipeline_runner.py`, `examples/pipeline_inference.py`
-> **测试**: `uv run pytest tests/test_phase7.py -k "part2" -v`
-> **需要**: >= 2 张 GPU
+> **Files**: `vkv/engine/pipeline_runner.py`, `examples/pipeline_inference.py`
+> **Tests**: `uv run pytest tests/test_phase7.py -k "part2" -v`
+> **Requires**: >= 2 GPUs
 
 ### Background
 
-Part 1 是 **DP**（每卡完整模型独立处理）。Part 2 是 **PP**（不同层放到不同卡，一个请求跨卡流转）。
+Part 1 is **DP** (each card runs a full model on different requests).
+Part 2 is **PP** (different layers on different cards; a single request flows across cards).
 
-**为什么需要 PP？**
+**Why PP?**
 
-- 模型比单卡显存大（比如 Llama 70B 需要 140GB FP16，A100 80GB 单卡装不下）
-- PP 把 32 层分到 2 张卡：layer 0-15 放 GPU 0，layer 16-31 放 GPU 1
-- 一个请求：GPU 0 算前一半 → activation 传到 GPU 1 → 算后一半
+- Model is bigger than one GPU's VRAM (e.g. Llama 70B needs 140 GB in FP16; an A100 has 80 GB)
+- PP splits 32 layers across 2 GPUs: layers 0–15 → GPU 0, layers 16–31 → GPU 1
+- Single request path: GPU 0 computes the first half → activation crosses to GPU 1 → GPU 1 computes the second half
 
-### 核心挑战：KV cache 也要跟随分片
+### Core challenge: KV cache must follow the sharding
 
-每层的 attention 需要读写自己那层的 KV。如果 layer 5 在 GPU 0，layer 5 的 KV 必须也在 GPU 0，否则 attention 时 Q/K/V 不在同一张卡上 → CUDA device mismatch。
+Each layer's attention reads/writes its own KV. If layer 5 lives on GPU 0, layer 5's KV must also be on GPU 0. Otherwise Q/K/V won't be on the same card at attention time → CUDA device mismatch.
 
-需要的改动：
-1. **`BlockManager`** 支持 `layer_device_map: Dict[int, str]`，每层的 `gpu_key_cache[layer]` 在对应的 device 上
-2. **模型加载**用 `accelerate` 的 `device_map` 手动切分层，activations 自动跨卡传（HF 会插入 hook）
-3. **`PagedCache.update`** 不用改，因为它通过 `block_manager.write_kv(block_id, layer, slot, K, V)` 写入，KV 在哪张卡由 BlockManager 决定
+Required changes:
+1. **`BlockManager`** must support `layer_device_map: Dict[int, str]`, placing `gpu_key_cache[layer]` on the requested device.
+2. **Model loading** must use `accelerate`'s `device_map` to manually shard layers; HF inserts hooks that move activations across GPUs automatically.
+3. **`PagedCache.update`** needs no change — it goes through `block_manager.write_kv(block_id, layer, slot, K, V)`, so BlockManager decides which card the KV lives on.
 
-### Task 2.1: 扩展 `BlockManager` 支持 per-layer device
+### Task 2.1: Extend `BlockManager` to support per-layer devices
 
-**文件**: `vkv/engine/block_manager.py`
+**File**: `vkv/engine/block_manager.py`
 
-修改 `__init__` 签名，加一个可选参数：
+Add an optional parameter to `__init__`:
+
 ```python
 def __init__(self, model_config, cache_config,
              device: str = "cpu",
              layer_device_map: Optional[Dict[int, str]] = None):
 ```
 
-- 如果 `layer_device_map is None`：所有层用 `device`（保持向后兼容）
-- 如果提供：`gpu_key_cache[i]` 创建时用 `device=layer_device_map[i]`
+- If `layer_device_map is None`: all layers use `device` (backward compatible)
+- If provided: `gpu_key_cache[i]` is created with `device=layer_device_map[i]`
 
-**Hint**：只需要改 `torch.zeros(...)` 的 `device` 参数。
+**Hint**: only the `device` argument of `torch.zeros(...)` needs changing.
 
-### Task 2.2: 实现 `PipelineParallelRunner`
+### Task 2.2: Implement `PipelineParallelRunner`
 
-**文件**: `vkv/engine/pipeline_runner.py`
+**File**: `vkv/engine/pipeline_runner.py`
 
-继承 `RealModelRunner` 或从零写，关键点：
+Extend `RealModelRunner` or write from scratch. Key points:
 
 ```python
 class PipelineParallelRunner(RealModelRunner):
     def __init__(self, model_name, block_manager, num_gpus, ...):
-        # 1. 计算 layer -> device 映射
+        # 1. Compute layer -> device map
         num_layers = cfg.num_hidden_layers
         layers_per_gpu = num_layers // num_gpus
         device_map = {
@@ -209,21 +212,21 @@ class PipelineParallelRunner(RealModelRunner):
             "lm_head": num_gpus - 1,
         }
 
-        # 2. 加载模型时传入 device_map
+        # 2. Load model with device_map
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=dtype,
             device_map=device_map,
         ).eval()
 
-        # 3. block_manager 需要提前配好 layer_device_map
+        # 3. block_manager must be constructed with a matching layer_device_map
 ```
 
-### Task 2.3: 端到端 PP 推理 demo
+### Task 2.3: End-to-end PP inference demo
 
-**文件**: `examples/pipeline_inference.py`
+**File**: `examples/pipeline_inference.py`
 
-单进程跑（PP 只需一个 Python 进程，因为 HF 用 hook 自动跨卡传 activation，不像 TP 需要多进程通信）：
+Runs in a single process (PP needs only one Python process, because HF uses hooks to move activations across cards — unlike TP which needs multi-process communication):
 
 ```python
 runner = PipelineParallelRunner(
@@ -234,10 +237,10 @@ runner = PipelineParallelRunner(
 output = runner.generate("What is AI?", max_new_tokens=30)
 ```
 
-### Task 2.4: 观察点
+### Task 2.4: Observations
 
-跑起来后可以用 `nvidia-smi` 观察：
-- 两张卡都有显存占用（模型分片）
-- 推理时两张卡都在忙（activation 流水线）
+While running, watch with `nvidia-smi`:
+- Both GPUs hold model weights (sharded)
+- Both GPUs are busy during inference (pipeline of activations)
 
-**性能**：单请求 PP **不会更快**（甚至更慢，因为跨卡传 activation 有开销），但可以跑更大的模型。真正提速需要**多请求 + micro-batching**（把 batch 切成小片，让 pipeline 各段并行工作），这是 Phase 8 的内容。
+**Performance note**: single-request PP is **not faster** (may even be slower due to cross-GPU activation transfer), but it lets you fit larger models. Real speedup requires **many requests + micro-batching** (split each batch into micro-batches so different pipeline stages run concurrently). That's Phase 8 territory.

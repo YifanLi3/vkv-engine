@@ -1,10 +1,10 @@
 # Phase 2: Continuous Batching Scheduler
 
-> **预计用时**: 10-15 小时 | **难度**: ★★★★☆  
-> **前置知识**: Phase 1 全部完成、队列/状态机概念  
-> **需要 GPU**: 否（所有测试使用 MockModelRunner）
+> **Est. time**: 10–15 hours | **Difficulty**: ★★★★☆
+> **Prerequisites**: Phase 1 fully done; familiarity with queues / state machines
+> **Requires GPU**: No (all tests use `MockModelRunner`)
 
-### 命名对照表
+### Naming reference
 
 | vkv-engine | nano-vLLM | vLLM |
 |------------|-----------|------|
@@ -12,87 +12,87 @@
 | `Scheduler.schedule()` | `Scheduler.schedule()` | `Scheduler.schedule()` |
 | `Scheduler.add()` | `Scheduler.add()` | `Scheduler.add_seq_group()` |
 | `Scheduler.preempt()` | `Scheduler.preempt()` | `Scheduler._preempt()` |
-| `Scheduler.postprocess()` | `Scheduler.postprocess()` | 在 `LLMEngine.step()` 中 |
+| `Scheduler.postprocess()` | `Scheduler.postprocess()` | inside `LLMEngine.step()` |
 | `LLMEngine` | `LLMEngine` | `LLMEngine` |
 | `SchedulerOutput` | `(list, bool)` tuple | `SchedulerOutputs` |
 
 ---
 
-## 目录
+## Table of Contents
 
-- [Part 0: Background — 什么是 Continuous Batching](#part-0-background)
-- [Part 1: SchedulerConfig & SchedulerOutput (热身)](#part-1-config)
-- [Part 2: 基本调度 — Prefill 优先 (核心)](#part-2-basic-schedule)
-- [Part 3: Decode 调度 + Preemption (核心)](#part-3-decode-preemption)
-- [Part 4: Postprocess — 处理生成结果 (核心)](#part-4-postprocess)
-- [Part 5: LLMEngine — 串联所有组件 (核心)](#part-5-llm-engine)
-- [Part 6: Chunked Prefill (进阶)](#part-6-chunked-prefill)
-- [Part 7: 端到端模拟推理 (集成)](#part-7-e2e)
+- [Part 0: Background — what is continuous batching](#part-0-background)
+- [Part 1: SchedulerConfig & SchedulerOutput (warm-up)](#part-1-config)
+- [Part 2: Basic scheduling — prefill first (core)](#part-2-basic-schedule)
+- [Part 3: Decode scheduling + preemption (core)](#part-3-decode-preemption)
+- [Part 4: Postprocess — handle generation results (core)](#part-4-postprocess)
+- [Part 5: LLMEngine — wire everything together (core)](#part-5-llm-engine)
+- [Part 6: Chunked prefill (advanced)](#part-6-chunked-prefill)
+- [Part 7: End-to-end simulated inference (integration)](#part-7-e2e)
 
 ---
 
-## 如何使用本文档
+## How to use this document
 
-1. **先读背景**：理解 continuous batching 和 static batching 的区别
-2. **填充代码**：在 `vkv/engine/scheduler.py` 和 `vkv/engine/llm_engine.py` 中实现 TODO
-3. **运行测试**：
+1. **Read the background first**: understand continuous batching vs static batching.
+2. **Fill in the code**: implement the TODOs in `vkv/engine/scheduler.py` and `vkv/engine/llm_engine.py`.
+3. **Run the tests**:
    ```bash
    uv run pytest tests/test_phase2.py -k "part1" -v
-   uv run pytest tests/test_phase2.py -v     # 全部
+   uv run pytest tests/test_phase2.py -v     # everything
    ```
 
 ---
 
 <a id="part-0-background"></a>
-## Part 0: Background — 什么是 Continuous Batching
+## Part 0: Background — What is continuous batching
 
-### Static Batching（传统方式）
+### Static batching (the traditional way)
 
 ```
 Batch = [Seq A (100 tokens), Seq B (50 tokens), Seq C (200 tokens)]
 
-每一步：所有 Sequence 一起 decode
-Step 1: A 生成 token, B 生成 token, C 生成 token
-Step 2: A 生成 token, B 生成 token, C 生成 token
+Every step: all sequences decode together
+Step 1:   A generates a token, B generates a token, C generates a token
+Step 2:   A generates a token, B generates a token, C generates a token
 ...
-Step 50: A 生成 token, B 完成了！  C 生成 token
-Step 51: A 生成 token, B [空等]    C 生成 token   ← B 的 GPU 算力浪费了
+Step 50:  A generates a token, B is done!         C generates a token
+Step 51:  A generates a token, B [idle wait]      C generates a token   ← B's GPU compute wasted
 ...
-Step 100: A 完成了！   B [空等]    C 生成 token   ← A 和 B 都在浪费
+Step 100: A is done!            B [idle wait]      C generates a token   ← A and B both idle
 ...
-Step 200: A [空等]     B [空等]    C 完成了！      ← 终于全部完成
+Step 200: A [idle wait]         B [idle wait]      C is done!            ← finally
 
-问题：短请求完成后 GPU 在空转，等最长的请求
+Problem: after short requests finish, the GPU spins idle waiting on the longest one.
 ```
 
-### Continuous Batching（nano-vLLM / vLLM 的方式）
+### Continuous batching (nano-vLLM / vLLM way)
 
 ```
-Step 1: A 生成 token, B 生成 token, C 生成 token
+Step 1:   A generates a token, B generates a token, C generates a token
 ...
-Step 50: A 生成 token, B 完成！→ 立刻移出, D 加入！  C 生成 token
-Step 51: A 生成 token, D 做 prefill                   C 生成 token
-                       ↑ 新请求立刻填补空位
+Step 50:  A generates a token, B is done! → immediately evicted, D joins!   C generates a token
+Step 51:  A generates a token, D runs prefill                               C generates a token
+                                 ↑ new request fills the slot immediately
 ...
-Step 100: A 完成！→ E 加入  D 生成 token  C 生成 token
+Step 100: A is done! → E joins   D generates a token                        C generates a token
 
-GPU 永远满载，没有空转
+GPU stays saturated with no idle time.
 ```
 
-### 调度的核心问题
+### Core scheduling questions
 
-每个 `schedule()` 调用需要决定：
+Every `schedule()` call must decide:
 
-1. **做 prefill 还是 decode？** — prefill 是 compute-bound，decode 是 memory-bound
-2. **选哪些序列进入 batch？** — 受限于 GPU 显存和 max_num_seqs
-3. **显存不够怎么办？** — preempt（淘汰）某些 running 序列
+1. **Prefill or decode?** — prefill is compute-bound, decode is memory-bound
+2. **Which seqs enter the batch?** — bounded by GPU memory and `max_num_seqs`
+3. **What if memory runs out?** — preempt some running seqs
 
-### nano-vLLM 的 Scheduler 核心逻辑（~60 行）
+### nano-vLLM's Scheduler core logic (~60 lines)
 
 ```python
-# nano-vLLM scheduler.py 简化版
+# Simplified nano-vLLM scheduler.py
 def schedule(self):
-    # 优先 prefill
+    # prefill first
     while self.waiting:
         seq = self.waiting[0]
         if can_allocate(seq):
@@ -104,91 +104,91 @@ def schedule(self):
     if scheduled:
         return scheduled, True   # is_prefill = True
 
-    # 没有 prefill，做 decode
+    # no prefill left, do decode
     for seq in self.running:
         if not can_append(seq):
-            preempt(self.running.pop())  # 内存不够，淘汰最后一个
+            preempt(self.running.pop())  # OOM, drop the last one
         else:
             scheduled.append(seq)
     return scheduled, False  # is_prefill = False
 ```
 
-我们的 Phase 2 在此基础上增加：
-- **SWAPPED 状态 + swap in/out**（不丢弃 KV）
-- **LRUEvictor**（智能选择淘汰对象）
-- **max_num_batched_tokens**（控制 batch 大小）
-- **Chunked Prefill**（Part 6 进阶）
+Our Phase 2 adds on top of this:
+- **SWAPPED state + swap in/out** (don't discard KV)
+- **LRUEvictor** (smarter eviction choice)
+- **max_num_batched_tokens** (control batch size)
+- **Chunked prefill** (Part 6 advanced)
 
 ---
 
 <a id="part-1-config"></a>
-## Part 1: SchedulerConfig & SchedulerOutput [热身]
+## Part 1: SchedulerConfig & SchedulerOutput [warm-up]
 
-> **文件**: `vkv/engine/scheduler.py`  
-> **测试**: `uv run pytest tests/test_phase2.py -k "part1" -v`
+> **File**: `vkv/engine/scheduler.py`
+> **Tests**: `uv run pytest tests/test_phase2.py -k "part1" -v`
 
-### Task 1.1: 实现 `SchedulerConfig`
+### Task 1.1: Implement `SchedulerConfig`
 
 ```python
 @dataclass
 class SchedulerConfig:
-    max_num_seqs: int = 256            # batch 中最多几个 sequence
-    max_num_batched_tokens: int = 4096 # 一个 batch 最多处理多少 token
+    max_num_seqs: int = 256            # max sequences in a batch
+    max_num_batched_tokens: int = 4096 # max tokens processed in a batch
 ```
 
-### Task 1.2: 实现 `SchedulerOutput`
+### Task 1.2: Implement `SchedulerOutput`
 
-nano-vLLM 直接返回 `(list, bool)` tuple。我们用一个 dataclass 更清晰：
+nano-vLLM just returns a `(list, bool)` tuple. A dataclass is clearer:
 
 ```python
 @dataclass
 class SchedulerOutput:
-    scheduled_seqs: List[Sequence]  # 本轮要执行的序列
+    scheduled_seqs: List[Sequence]  # sequences to run this step
     is_prefill: bool                # True = prefill, False = decode
-    preempted_seqs: List[Sequence]  # 被抢占的序列
-    swapped_in_seqs: List[Sequence] # 被 swap in 的序列
+    preempted_seqs: List[Sequence]  # sequences preempted this step
+    swapped_in_seqs: List[Sequence] # sequences swapped back in this step
 ```
 
 ---
 
 <a id="part-2-basic-schedule"></a>
-## Part 2: 基本调度 — Prefill 优先 [核心]
+## Part 2: Basic scheduling — prefill first [core]
 
-> **文件**: `vkv/engine/scheduler.py` 的 `_schedule_prefill()`  
-> **测试**: `uv run pytest tests/test_phase2.py -k "part2" -v`
+> **File**: `_schedule_prefill()` in `vkv/engine/scheduler.py`
+> **Tests**: `uv run pytest tests/test_phase2.py -k "part2" -v`
 
 ### Background
 
-调度的第一优先级是 **prefill**：把 WAITING 队列中的请求搬到 GPU 上。
+Scheduling's top priority is **prefill**: move requests from the WAITING queue to the GPU.
 
 ```
-schedule() 被调用时：
+When schedule() is called:
 
-  waiting: [Seq D, Seq E, Seq F]     ← 等待 prefill
-  running: [Seq A, Seq B, Seq C]     ← 正在 decode
+  waiting: [Seq D, Seq E, Seq F]     ← waiting for prefill
+  running: [Seq A, Seq B, Seq C]     ← currently decoding
 
-  先检查 waiting 队列，能 prefill 就 prefill
-  没有可 prefill 的，再做 decode
+  Check waiting queue first, prefill what we can.
+  If nothing to prefill, do decode.
 ```
 
-### Task 2.1: 实现 `_schedule_prefill()`
+### Task 2.1: Implement `_schedule_prefill()`
 
 ```
-算法：
-1. 遍历 waiting 队列
-2. 对每个 seq，检查：
-   a. batch 中序列数 < max_num_seqs
-   b. batch 总 token 数 + seq 长度 <= max_num_batched_tokens
-   c. BlockManager 有足够的空闲 block（can_allocate）
-3. 如果满足，分配 block，移到 running 队列
-4. 返回本轮要 prefill 的序列列表
+Algorithm:
+1. Iterate the waiting queue
+2. For each seq, check:
+   a. num_seqs_in_batch < max_num_seqs
+   b. total_tokens_in_batch + seq_len <= max_num_batched_tokens
+   c. BlockManager has enough free blocks (can_allocate)
+3. If OK, allocate blocks and move to the running queue
+4. Return the list of sequences to prefill this round
 ```
 
-### Task 2.2: 实现 `schedule()` 的 prefill 部分
+### Task 2.2: Implement the prefill part of `schedule()`
 
 ```python
 def schedule(self) -> SchedulerOutput:
-    # 1. 先尝试 prefill
+    # 1. Try prefill first
     prefill_seqs = self._schedule_prefill()
     if prefill_seqs:
         return SchedulerOutput(
@@ -198,85 +198,85 @@ def schedule(self) -> SchedulerOutput:
             swapped_in_seqs=[],
         )
 
-    # 2. 没有 prefill，做 decode（Part 3）
+    # 2. No prefill, do decode (Part 3)
     ...
 ```
 
 ---
 
 <a id="part-3-decode-preemption"></a>
-## Part 3: Decode 调度 + Preemption [核心]
+## Part 3: Decode scheduling + preemption [core]
 
-> **文件**: `vkv/engine/scheduler.py` 的 `_schedule_decode()` 和 `preempt()`  
-> **测试**: `uv run pytest tests/test_phase2.py -k "part3" -v`
+> **File**: `_schedule_decode()` and `preempt()` in `vkv/engine/scheduler.py`
+> **Tests**: `uv run pytest tests/test_phase2.py -k "part3" -v`
 
-### Background: 为什么 Decode 需要 Preemption
+### Background: why decode needs preemption
 
-Decode 阶段每个序列每步生成一个 token，可能需要新 block：
+In decode, each seq produces one token per step and may need a new block:
 
 ```
-Seq A: 已经用了 [Block 3, Block 7]，Block 7 刚好满了
-       下一个 token 需要新 block → 但 GPU 没有空闲 block 了！
+Seq A: uses [Block 3, Block 7]; Block 7 just filled up.
+       Next token needs a new block → but no free block left on GPU!
 
-解决：preempt（抢占）另一个序列，释放它的 block
+Solution: preempt another sequence, release its blocks.
 ```
 
-### nano-vLLM vs vkv 的 Preemption 对比
+### Preemption: nano-vLLM vs vkv
 
 ```python
-# nano-vLLM: 直接丢弃 KV，重新排队
+# nano-vLLM: drop KV, re-queue
 def preempt(self, seq):
     seq.status = SequenceStatus.WAITING
     self.block_manager.deallocate(seq)
     self.waiting.appendleft(seq)
 
-# vkv-engine: swap to CPU，保留 KV
+# vkv-engine: swap to CPU, keep KV
 def preempt(self, seq):
     mapping = self.swapper.swap_out(seq.block_table)
-    seq.cpu_block_table = mapping       # 记住 CPU 端的 block 位置
+    seq.cpu_block_table = mapping       # remember CPU-side block IDs
     seq.status = SequenceStatus.SWAPPED
     self.swapped.append(seq)
 ```
 
-### Task 3.1: 实现 `preempt()`
+### Task 3.1: Implement `preempt()`
 
-两种模式：
-- `mode="recompute"`: nano-vLLM 风格，丢弃 KV，重新排队
-- `mode="swap"`: vkv 扩展，swap to CPU
+Two modes:
+- `mode="recompute"`: nano-vLLM style — drop KV, re-queue
+- `mode="swap"`: vkv extension — swap to CPU
 
-### Task 3.2: 实现 `_schedule_decode()`
-
-```
-算法：
-1. 遍历 running 队列中的序列
-2. 对每个 seq，检查：append 下一个 token 是否需要新 block
-3. 如果需要新 block 且 GPU 没有空闲 block → preempt 其他序列
-4. 分配 block（通过 Sequence.append_token 内部处理）
-5. 返回本轮要 decode 的序列列表
-```
-
-### Task 3.3: 实现 `_try_swap_in()`
-
-在 decode 之前，尝试把 SWAPPED 的序列搬回 GPU：
+### Task 3.2: Implement `_schedule_decode()`
 
 ```
-算法：
-1. 检查 swapped 队列
-2. 如果有足够的 GPU block，swap_in 并移回 running 队列
-3. 返回 swap in 的序列列表
+Algorithm:
+1. Iterate the running queue
+2. For each seq, check: does appending the next token require a new block?
+3. If a new block is needed and GPU has none → preempt another seq
+4. Allocate the block (through Sequence.append_token internally)
+5. Return the list of seqs to decode this round
+```
+
+### Task 3.3: Implement `_try_swap_in()`
+
+Before decoding, try to bring SWAPPED seqs back to GPU:
+
+```
+Algorithm:
+1. Check the swapped queue
+2. If there are enough GPU blocks, swap_in and move back to the running queue
+3. Return the list of swapped-in seqs
 ```
 
 ---
 
 <a id="part-4-postprocess"></a>
-## Part 4: Postprocess — 处理生成结果 [核心]
+## Part 4: Postprocess — handle generation results [core]
 
-> **文件**: `vkv/engine/scheduler.py` 的 `postprocess()`  
-> **测试**: `uv run pytest tests/test_phase2.py -k "part4" -v`
+> **File**: `postprocess()` in `vkv/engine/scheduler.py`
+> **Tests**: `uv run pytest tests/test_phase2.py -k "part4" -v`
 
 ### Background
 
-nano-vLLM 的 `postprocess` 在每步 decode 后调用：
+nano-vLLM's `postprocess` runs after every decode step:
 
 ```python
 # nano-vLLM
@@ -290,26 +290,26 @@ def postprocess(self, seqs, token_ids):
             self.running.remove(seq)
 ```
 
-### Task 4.1: 实现 `postprocess()`
+### Task 4.1: Implement `postprocess()`
 
 ```
-对每个序列和它生成的 token：
-1. 调用 seq.append_token(token_id)
-2. 检查是否结束（EOS 或达到 max_tokens）
-3. 如果结束 → seq.free(), 从 running 移除
+For each seq and its generated token:
+1. Call seq.append_token(token_id)
+2. Check whether it's finished (EOS or reached max_tokens)
+3. If finished → seq.free(), remove from running
 ```
 
 ---
 
 <a id="part-5-llm-engine"></a>
-## Part 5: LLMEngine — 串联所有组件 [核心]
+## Part 5: LLMEngine — wire everything together [core]
 
-> **文件**: `vkv/engine/llm_engine.py`（新文件）  
-> **测试**: `uv run pytest tests/test_phase2.py -k "part5" -v`
+> **File**: `vkv/engine/llm_engine.py` (new file)
+> **Tests**: `uv run pytest tests/test_phase2.py -k "part5" -v`
 
 ### Background
 
-nano-vLLM 的 `LLMEngine` 是顶层协调者：
+nano-vLLM's `LLMEngine` is the top-level coordinator:
 
 ```python
 # nano-vLLM LLMEngine.step()
@@ -319,9 +319,9 @@ def step(self):
     self.scheduler.postprocess(seqs, token_ids)
 ```
 
-一个 `step()` = 一轮调度 + 一次模型计算 + 结果处理。
+One `step()` = one round of schedule + one model call + result handling.
 
-### Task 5.1: 实现 `LLMEngine.__init__()`
+### Task 5.1: Implement `LLMEngine.__init__()`
 
 ```python
 class LLMEngine:
@@ -331,7 +331,7 @@ class LLMEngine:
         self.model_runner = MockModelRunner(model_config)
 ```
 
-### Task 5.2: 实现 `LLMEngine.add_request()`
+### Task 5.2: Implement `LLMEngine.add_request()`
 
 ```python
 def add_request(self, token_ids, sampling_params=None):
@@ -340,70 +340,70 @@ def add_request(self, token_ids, sampling_params=None):
     return seq.seq_id
 ```
 
-### Task 5.3: 实现 `LLMEngine.step()`
+### Task 5.3: Implement `LLMEngine.step()`
 
-核心循环的一步。调度 → 执行 → 后处理。
+One step of the core loop: schedule → execute → postprocess.
 
-### Task 5.4: 实现 `LLMEngine.generate()`
+### Task 5.4: Implement `LLMEngine.generate()`
 
-运行 `step()` 直到所有请求完成，收集输出。
+Run `step()` until every request finishes, then collect outputs.
 
 ---
 
 <a id="part-6-chunked-prefill"></a>
-## Part 6: Chunked Prefill [进阶]
+## Part 6: Chunked prefill [advanced]
 
-> **文件**: `vkv/engine/scheduler.py`  
-> **测试**: `uv run pytest tests/test_phase2.py -k "part6" -v`
+> **File**: `vkv/engine/scheduler.py`
+> **Tests**: `uv run pytest tests/test_phase2.py -k "part6" -v`
 
-### Background: 为什么需要 Chunked Prefill
+### Background: why chunked prefill
 
-长 prompt 的 prefill 会阻塞所有 decode 请求：
+A long prompt's prefill blocks all decode requests:
 
 ```
-普通 prefill:
-  Step N:   Seq A (2048 token prompt) 做 prefill ← 耗时很长
-  Step N+1: Seq B, C, D 的 decode 被阻塞         ← TPOT 飙升
+Regular prefill:
+  Step N:   Seq A (2048-token prompt) runs prefill ← very long
+  Step N+1: Seq B, C, D decode is blocked          ← TPOT spikes
 
-Chunked prefill (Sarathi 思路):
-  Step N:   Seq A 的前 512 token prefill + Seq B, C, D decode
-  Step N+1: Seq A 的下 512 token prefill + Seq B, C, D decode
-  Step N+2: Seq A 的下 512 token prefill + Seq B, C, D decode
-  Step N+3: Seq A 的最后 512 token prefill + Seq B, C, D decode
-  → Decode 延迟不受影响
+Chunked prefill (Sarathi-style):
+  Step N:    First 512 tokens of Seq A prefill + Seq B, C, D decode
+  Step N+1:  Next 512 tokens of Seq A prefill  + Seq B, C, D decode
+  Step N+2:  Next 512 tokens of Seq A prefill  + Seq B, C, D decode
+  Step N+3:  Last 512 tokens of Seq A prefill  + Seq B, C, D decode
+  → Decode latency is unaffected
 ```
 
-### Task 6.1: 实现 `_schedule_chunked_prefill()`
+### Task 6.1: Implement `_schedule_chunked_prefill()`
 
-在同一个 batch 中混合 prefill chunk 和 decode：
+Mix a prefill chunk with decodes in the same batch:
 
 ```
 budget = max_num_batched_tokens
-1. 先安排 decode（每个 seq 占 1 token）→ budget -= num_decode_seqs
-2. 用剩余 budget 做 prefill chunk
+1. Schedule decodes first (each seq takes 1 token) → budget -= num_decode_seqs
+2. Use remaining budget for a prefill chunk
 ```
 
 ---
 
 <a id="part-7-e2e"></a>
-## Part 7: 端到端模拟推理 [集成]
+## Part 7: End-to-end simulated inference [integration]
 
-> **文件**: `tests/test_phase2.py` 的集成测试  
-> **测试**: `uv run pytest tests/test_phase2.py -k "part7" -v`
+> **File**: integration tests in `tests/test_phase2.py`
+> **Tests**: `uv run pytest tests/test_phase2.py -k "part7" -v`
 
-使用 `LLMEngine` + `MockModelRunner` 模拟完整的推理流程：
-- 添加多个请求
-- 运行 step() 循环
-- 验证所有请求最终完成
-- 验证 BlockManager 没有内存泄漏
+Use `LLMEngine` + `MockModelRunner` to simulate a full inference flow:
+- Add multiple requests
+- Run the `step()` loop
+- Assert that every request eventually completes
+- Assert that the BlockManager has no memory leak
 
 ---
 
-## 运行测试
+## Running the tests
 
 ```bash
-uv run pytest tests/test_phase2.py -v                # 全部
-uv run pytest tests/test_phase2.py -k "part1" -v     # 单个 Part
+uv run pytest tests/test_phase2.py -v                # everything
+uv run pytest tests/test_phase2.py -k "part1" -v     # single Part
 uv run pytest tests/test_phase2.py -k "part2" -v
 uv run pytest tests/test_phase2.py -k "part3" -v
 uv run pytest tests/test_phase2.py -k "part4" -v
