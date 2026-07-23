@@ -18,10 +18,12 @@ dev = [
     "pytest>=7.4.0",
 ]
 
-[[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-explicit = true
+# Uncomment below for CUDA GPU machines:
+# [[tool.uv.index]]
+# name = "pytorch-cu124"
+# url = "https://download.pytorch.org/whl/cu124"
+# explicit = true
+#
+# [tool.uv.sources]
+# torch = { index = "pytorch-cu124" }
 
-[tool.uv.sources]
-torch = { index = "pytorch-cu124" }

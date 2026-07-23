@@ -39,9 +39,9 @@ def compute_scale(tensor: torch.Tensor, bits: int = 8) -> torch.Tensor:
         >>> compute_scale(x, bits=8)
         tensor(0.01575)  # 2.0 / 127
 
-    TODO: Implement this.
     """
-    raise NotImplementedError("TODO: Implement compute_scale")
+    max_val = 2 ** (bits - 1) - 1
+    return tensor.abs().max() / max_val
 
 
 def quantize_tensor(
@@ -65,12 +65,12 @@ def quantize_tensor(
     Returns:
         Quantized tensor (dtype=torch.int8)
 
-    TODO: Implement this.
-    Hint: torch.clamp(torch.round(tensor / scale), min_val, max_val).to(torch.int8)
     Note: Even for INT4, we store in int8 dtype (PyTorch has no int4).
     """
-    raise NotImplementedError("TODO: Implement quantize_tensor")
-
+    min_val = - 2 ** (bits - 1)
+    max_val = 2 ** (bits - 1) - 1
+    return torch.clamp(torch.round(tensor/scale), min_val, max_val).to(torch.int8)
+    
 
 def dequantize_tensor(
     qtensor: torch.Tensor,
@@ -88,10 +88,8 @@ def dequantize_tensor(
     Returns:
         Dequantized FP32 tensor
 
-    TODO: Implement this.
-    Hint: qtensor.float() * scale
     """
-    raise NotImplementedError("TODO: Implement dequantize_tensor")
+    return qtensor.to(torch.float32) * scale
 
 
 # =============================================================================
@@ -126,21 +124,21 @@ class PerTensorQuantizer:
             quantized_tensor: same shape, dtype=int8
             scale: scalar tensor
 
-        TODO: Implement this.
         1. Compute scale using compute_scale()
         2. Quantize using quantize_tensor()
         3. Return (quantized, scale)
         """
-        raise NotImplementedError("TODO: Implement PerTensorQuantizer.quantize")
+        scale = compute_scale(tensor, self.bits)
+        qtensor = quantize_tensor(tensor, scale, self.bits)
+        return qtensor, scale
 
     def dequantize(self, qtensor: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         """
         Dequantize back to FP.
 
-        TODO: Implement this.
         Use dequantize_tensor().
         """
-        raise NotImplementedError("TODO: Implement PerTensorQuantizer.dequantize")
+        return dequantize_tensor(qtensor, scale)
 
 
 # =============================================================================
