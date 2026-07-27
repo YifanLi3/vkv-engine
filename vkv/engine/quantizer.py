@@ -180,21 +180,31 @@ class PerChannelQuantizer:
             (quantized_tensor, scales)
             scales shape: [num_kv_heads]
 
-        TODO: Implement this.
-        1. For each channel (head), compute its own scale
-        2. Reshape scale for broadcasting
-        3. Quantize: round(tensor / scale_broadcast)
-        4. Return (quantized, scales)
-
         Hint: Use tensor.abs().amax(dim=...) to get per-channel max.
         """
-        raise NotImplementedError("TODO: Implement PerChannelQuantizer.quantize")
+        max_val = 2 ** (self.bits - 1) - 1
+
+        # 1. For each channel (head), compute its own scale
+        dims = [d for d in range(tensor.ndim) if d != self.channel_dim]
+        scales = tensor.abs().amax(dim=dims) / max_val
+
+        # 2. Reshape scale for broadcasting
+        shape = [1] * tensor.ndim
+        shape[self.channel_dim] = -1
+        reshaped_scales = scales.reshape(shape)
+
+        # 3. Quantize: round(tensor / scale_broadcast)
+        qtensor = torch.clamp(
+                torch.round(tensor/reshaped_scales), -max_val - 1, max_val
+        ).to(torch.int8)
+
+        # 4. Return (quantized, scales)
+        return qtensor, scales
 
     def dequantize(self, qtensor: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
         """
         Dequantize with per-channel scales.
 
-        TODO: Implement this.
         Reshape scales for broadcasting, then qtensor.float() * scales.
         """
         raise NotImplementedError("TODO: Implement PerChannelQuantizer.dequantize")
