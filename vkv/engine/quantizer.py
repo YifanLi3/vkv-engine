@@ -207,7 +207,11 @@ class PerChannelQuantizer:
 
         Reshape scales for broadcasting, then qtensor.float() * scales.
         """
-        raise NotImplementedError("TODO: Implement PerChannelQuantizer.dequantize")
+        shape = [1] * qtensor.ndim
+        shape[self.channel_dim] = -1
+        reshaped_scales = scales.reshape(shape)
+
+        return qtensor.to(torch.float32) * reshaped_scales
 
 
 # =============================================================================
@@ -236,12 +240,6 @@ class GroupedQuantizer:
         """
         Quantize with one scale per group.
 
-        For tensor [num_kv_heads, head_dim]:
-          1. Reshape to [num_kv_heads, num_groups, group_size]
-          2. Compute scale per group: [num_kv_heads, num_groups]
-          3. Quantize each group
-          4. Reshape back to [num_kv_heads, head_dim]
-
         Args:
             tensor: FP tensor [num_kv_heads, head_dim]
 
@@ -250,26 +248,42 @@ class GroupedQuantizer:
             quantized_tensor: same shape [num_kv_heads, head_dim], dtype=int8
             scales: [num_kv_heads, num_groups]
 
-        TODO: Implement this.
-        Hint:
-            num_groups = head_dim // group_size
-            reshaped = tensor.view(num_kv_heads, num_groups, group_size)
-            scales = reshaped.abs().amax(dim=-1) / max_val
-            quantized = clamp(round(reshaped / scales.unsqueeze(-1)), ...)
         """
-        raise NotImplementedError("TODO: Implement GroupedQuantizer.quantize")
+        max_val = 2 ** (self.bits - 1) - 1
+        num_kv_heads, head_dim = tensor.shape
+        num_groups = head_dim // self.group_size
+
+        # 1. Reshape to [num_kv_heads, num_groups, group_size]
+        reshaped_tensor = tensor.view(num_kv_heads, num_groups, self.group_size)
+
+        # 2. Compute scale per group: [num_kv_heads, num_groups]
+        scales = reshaped_tensor.abs().amax(dim=-1) / max_val
+
+        # 3. Quantize each group
+        qtensor = torch.clamp(
+                torch.round(reshaped_tensor/scales.unsqueeze(-1)), -max_val - 1, max_val
+        ).to(torch.int8)
+
+        # 4. Reshape back to [num_kv_heads, head_dim]
+        qtensor = qtensor.view(num_kv_heads, head_dim)
+
+        return qtensor, scales
 
     def dequantize(self, qtensor: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
         """
         Dequantize with per-group scales.
 
-        TODO: Implement this.
-        1. Reshape qtensor to [num_kv_heads, num_groups, group_size]
-        2. Multiply by scales.unsqueeze(-1)
-        3. Reshape back
         """
-        raise NotImplementedError("TODO: Implement GroupedQuantizer.dequantize")
+        # 1. Reshape qtensor to [num_kv_heads, num_groups, group_size]
+        num_kv_heads, head_dim = qtensor.shape
+        num_groups = head_dim // self.group_size
+        qtensor = qtensor.view(num_kv_heads, num_groups, self.group_size)
 
+        # 2. Multiply by scales.unsqueeze(-1)
+        result = qtensor.to(torch.float32) * scales.unsqueeze(-1)
+
+        # 3. Reshape back
+        return result.view(num_kv_heads, head_dim)
 
 # =============================================================================
 # Part 5: Quantized Cache Manager
