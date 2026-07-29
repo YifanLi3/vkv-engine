@@ -13,6 +13,8 @@ from typing import Tuple
 import torch
 import torch.nn.functional as F
 
+from vkv.engine.block_manager import BlockManager
+
 
 # =============================================================================
 # Part 1: Basic Quantization Math
@@ -307,12 +309,13 @@ class QuantizedCacheManager:
             quantizer: Quantizer instance (PerTensor, PerChannel, or Grouped)
                        If None, defaults to PerChannelQuantizer(bits=8)
 
-        TODO: Implement this.
         1. Store block_manager reference
         2. Store quantizer (default to PerChannelQuantizer)
         3. Initialize scale storage: Dict keyed by (block_id, layer_idx, slot_idx)
         """
-        raise NotImplementedError("TODO: Implement QuantizedCacheManager.__init__")
+        self.block_manager = block_manager
+        self.quantizer = quantizer
+        self._scales = {}
 
     def write_quantized(
         self,
@@ -330,13 +333,18 @@ class QuantizedCacheManager:
             key: FP16 key tensor [num_kv_heads, head_dim]
             value: FP16 value tensor [num_kv_heads, head_dim]
 
-        TODO: Implement this.
-        1. Quantize key → (q_key, k_scale)
-        2. Quantize value → (q_value, v_scale)
-        3. Write q_key and q_value to block_manager (as int8 tensors)
-        4. Store scales in self._scales[(block_id, layer_idx, slot_idx)]
         """
-        raise NotImplementedError("TODO: Implement write_quantized")
+        # 1. Quantize key → (q_key, k_scale)
+        q_key, k_scale = self.quantizer.quantize(key)
+
+        # 2. Quantize value → (q_value, v_scale)
+        q_value, v_scale = self.quantizer.quantize(value)
+
+        # 3. Write q_key and q_value to block_manager (as int8 tensors)
+        self.block_manager.write_kv(block_id, layer_idx, slot_idx, q_key, q_value)
+
+        # 4. Store scales in self._scales[(block_id, layer_idx, slot_idx)]
+        self._scales[(block_id, layer_idx, slot_idx)] = (k_scale, v_scale)
 
     def read_dequantized(
         self,
@@ -350,14 +358,19 @@ class QuantizedCacheManager:
         Returns:
             (key, value) as FP tensors (approximately restored)
 
-        TODO: Implement this.
-        1. Read q_key, q_value from block_manager
-        2. Retrieve scales from self._scales
-        3. Dequantize both
-        4. Return (key_approx, value_approx)
         """
-        raise NotImplementedError("TODO: Implement read_dequantized")
+        # 1. Read q_key, q_value from block_manager
+        q_key, q_value = self.block_manager.read_kv(block_id, layer_idx, slot_idx)
 
+        # 2. Retrieve scales from self._scales
+        k_scale, v_scale = self._scales[(block_id, layer_idx, slot_idx)]
+
+        # 3. Dequantize both
+        key_approx= self.quantizer.dequantize(q_key, k_scale)
+        value_approx = self.quantizer.dequantize(q_value, v_scale)
+
+        # 4. Return (key_approx, value_approx)
+        return (key_approx, value_approx)
 
 # =============================================================================
 # Part 6: Quantization Error Evaluation
