@@ -392,11 +392,7 @@ def compute_quantization_error(
         mse: Mean Squared Error (lower = better)
         cosine_similarity: Cosine similarity (closer to 1.0 = better)
 
-    TODO: Implement this.
-    mse = ((original - reconstructed) ** 2).mean().item()
-    cosine_sim = F.cosine_similarity(
-        original.flatten().unsqueeze(0),
-        reconstructed.flatten().unsqueeze(0)
-    ).item()
     """
-    raise NotImplementedError("TODO: Implement compute_quantization_error")
+    mse = ((original - reconstructed) ** 2).mean()
+    cosine_sim = F.cosine_similarity(original.flatten(), reconstructed.flatten(), dim=0)
+    return mse, cosine_sim
