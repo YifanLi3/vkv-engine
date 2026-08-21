@@ -236,6 +236,31 @@ class TestPart3:
         stats = cache.get_stats()
         assert stats["total_cached_blocks"] == 2
 
+    def test_split_rounds_down_to_block_boundary(self, cache, block_manager):
+        """
+        block_size=4. Sequences share 5 raw tokens [1,2,3,4,5] but that is NOT
+        a multiple of block_size, so only 1 block (4 tokens) may actually be
+        shared. The 5th token, even though it matches lexically, sits inside
+        a block whose other tokens differ — so it must NOT be treated as
+        shared.
+        """
+        bids_a = block_manager.allocate(2)
+        bids_b = block_manager.allocate(2)
+
+        # A: blocks [1,2,3,4] | [5,6,7,8]
+        cache.insert([1, 2, 3, 4, 5, 6, 7, 8], bids_a)
+        # B: blocks [1,2,3,4] | [5,9,10,11]  -- 5th token matches, 6th..8th differ
+        cache.insert([1, 2, 3, 4, 5, 9, 10, 11], bids_b)
+
+        blocks_a, count_a = cache.match_prefix([1, 2, 3, 4, 5, 6, 7, 8])
+        blocks_b, count_b = cache.match_prefix([1, 2, 3, 4, 5, 9, 10, 11])
+
+        # Only the first block (4 tokens) is truly shared
+        assert count_a == 8
+        assert count_b == 8
+        assert blocks_a[0] == blocks_b[0]   # shared first block
+        assert blocks_a[1] != blocks_b[1]   # second block differs (not shared)
+
 
 # =============================================================================
 # Part 4: evict

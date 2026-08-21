@@ -283,6 +283,45 @@ Note: `mid_node` and `suffix_node` share the same physical blocks as the
 original child — **no extra `inc_ref` needed** for them. Only the newly
 inserted leaf (`new_node`) needs `inc_ref`.
 
+### ⚠️ Critical rule: always split at a BLOCK boundary, never mid-block
+
+In the example above, `common = 2` happens to divide evenly into `block_size
+= 2`. But token-level matching can produce a `common` that is **not** a
+multiple of `block_size` — and in that case you must round DOWN to the
+nearest block boundary before splitting.
+
+**Why:** a block is the smallest cacheable/shareable unit. A block is only
+truly reusable if *every* token inside it matches — one matching token
+followed by a differing token still makes it a different physical block.
+
+```
+block_size = 2
+Existing: root → node([1,2,3,4], blocks=[10, 11])
+Insert:   [1,2,3,5] → blocks=[10, 12]
+
+common_raw = _match_len([1,2,3,4], [1,2,3,5]) = 3   # tokens 1,2,3 all match!
+
+BUT: block 11 covers tokens [3,4]; the new sequence's block for tokens [3,5]
+     is a DIFFERENT block (id 12) — token 4 vs 5 differ, so the whole block
+     differs, even though token 3 alone matched.
+
+→ round down to the block boundary:
+     common_blocks = common_raw // block_size = 3 // 2 = 1
+     common        = common_blocks * block_size = 2      ← use THIS
+
+So the split only shares [1,2] (1 block), NOT [1,2,3] (1.5 blocks):
+  mid_node:    token_ids=[1,2],   block_ids=[10]
+  suffix_node: token_ids=[3,4],   block_ids=[11]
+  new_node:    token_ids=[3,5],   block_ids=[12]   ← inc_ref(12)
+```
+
+**Rule of thumb:** always compute `common_blocks = common_raw // block_size`
+first, then derive `common = common_blocks * block_size`. Use this aligned
+`common` for ALL slicing (`token_ids[:common]`, `block_ids[:common_blocks]`).
+Never slice `token_ids` using the raw, unaligned match length — otherwise a
+node's `token_ids` length and `block_ids` length become inconsistent
+(`len(token_ids)` must always equal `len(block_ids) * block_size`).
+
 ### Task 3.1: Implement `insert()`
 
 ### Task 3.2: Insert both [1,2,3,4] and [1,2,5,6] step by step

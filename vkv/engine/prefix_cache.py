@@ -226,8 +226,26 @@ class PrefixCache:
                     break
 
                 child = node.children[key]
-                common = _match_len(child.token_ids, tokens_to_cache[cursor:])
-                common_blocks = common // block_size
+                common_raw = _match_len(child.token_ids, tokens_to_cache[cursor:])
+
+                # IMPORTANT: a block is the smallest cacheable unit. Even if
+                # common_raw (token-level match) isn't a multiple of
+                # block_size, we can only actually SHARE whole blocks — a
+                # block is physically identical only if every token inside
+                # it matches. So round the match length DOWN to the nearest
+                # block boundary before doing anything else:
+                #
+                #   common_blocks = common_raw // block_size
+                #   common = common_blocks * block_size   # use this, not common_raw
+                #
+                # Example (block_size=2): child=[1,2,3,4], new=[1,2,3,5]
+                #   common_raw = 3  (tokens 1,2,3 match)
+                #   common_blocks = 3 // 2 = 1
+                #   common = 1 * 2 = 2   ← only block [1,2] is truly shared;
+                #                          block [3,4] vs [3,5] differ, so
+                #                          token 3 alone does NOT count.
+                common_blocks = common_raw // block_size
+                common = common_blocks * block_size
 
                 if common == child.num_tokens:
                     # Full match — descend into child and continue
@@ -235,8 +253,14 @@ class PrefixCache:
                     block_cursor += child.num_blocks
                     node = child
 
+                elif common == 0:
+                    # No block-aligned overlap at all (e.g. common_raw < block_size).
+                    # Nothing can be shared here — stop without modifying the tree.
+                    break
+
                 else:
-                    # Partial match — SPLIT the existing child
+                    # Partial match (0 < common < child.num_tokens) — SPLIT
+                    # the existing child at the block-aligned boundary `common`.
                     #
                     # Before split (common=2, block_size=2):
                     #   node → child([1,2,3,4], blocks=[A,B])
@@ -246,19 +270,29 @@ class PrefixCache:
                     #               ├─ suffix([3,4], blocks=[B])   ← old child tail
                     #               └─ new([5,6], blocks=[C])      ← new tokens
                     #
-                    # Steps:
+                    # Steps (all slicing uses the block-aligned `common`,
+                    # never common_raw):
                     # 1. Create mid_node with child.token_ids[:common] and child.block_ids[:common_blocks]
-                    # 2. Create suffix_node = old child trimmed to token_ids[common:] and block_ids[common_blocks:]
+                    # 2. Create suffix_node = old child trimmed to
+                    #    token_ids[common:] and block_ids[common_blocks:]
                     # 3. mid_node.children[suffix_first_token] = suffix_node
                     # 4. node.children[key] = mid_node
-                    # 5. Create new leaf under mid_node for remaining tokens
+                    # 5. Create new leaf under mid_node for the remaining
+                    #    tokens_to_cache[cursor+common:] (this may still need
+                    #    its own alignment check if it's shorter than block_size)
                     # 6. Increment ref on new leaf's blocks
                     # (mid and suffix already share the same physical blocks — no extra inc_ref needed)
                     break  # TODO: implement splitting
 
-        Hint: After a split, the mid_node inherits the physical blocks for the
-        common prefix from the original child (no extra inc_ref needed for those).
-        Only the newly inserted leaf's blocks need inc_ref.
+        Hint: Always slice both token_ids and block_ids using the SAME
+        block-aligned `common` / `common_blocks` pair. Never slice token_ids
+        with the raw (unaligned) match length — that desyncs a node's
+        token_ids from its block_ids, since len(token_ids) must always equal
+        len(block_ids) * block_size.
+
+        After a split, the mid_node inherits the physical blocks for the
+        common prefix from the original child (no extra inc_ref needed for
+        those). Only the newly inserted leaf's blocks need inc_ref.
         """
         raise NotImplementedError
 
