@@ -179,7 +179,34 @@ class PrefixCache:
             update _hits / _misses
             return matched_blocks, cursor
         """
-        raise NotImplementedError
+        matched_blocks = []
+        cursor = 0  # index into token_ids
+        node = self.root
+
+        while cursor < len(token_ids):
+            key = token_ids[cursor]
+            child = node.children.get(key)
+
+            if child is None:
+                break
+
+            common = self._match_len(child.token_ids, token_ids[cursor:])
+
+            if common != child.num_tokens:
+                break
+            
+            matched_blocks.extend(child.block_ids)
+            cursor += child.num_tokens
+            child.last_access = time.monotonic()
+            node  = child
+
+        if matched_blocks:
+            self._hits += 1
+        else:
+            self._misses += 1
+
+        return matched_blocks, cursor
+
 
     # -------------------------------------------------------------------------
     # Part 3: insert
@@ -372,12 +399,30 @@ class PrefixCache:
             total_cached_blocks:  int     — blocks currently stored in the tree
             num_nodes:            int     — tree nodes (excluding root)
 
-        Hint: use _count_nodes_and_blocks(self.root) for tree totals.
         """
-        raise NotImplementedError
+
+        total_hits = self._hits
+        total_misses = self._misses
+        total_queries = total_hits + total_misses
+
+        hit_rate = (
+                total_hits / total_queries
+                if total_queries > 0
+                else 0.0
+        )
+
+        num_nodes, total_cached_blocks = self._count_nodes_and_blocks(self.root)
+
+        return {
+            "hit_rate": hit_rate,
+            "total_hits": total_hits,
+            "total_misses": total_misses,
+            "total_cached_blocks": total_cached_blocks,
+            "num_nodes": num_nodes,
+        }
 
     # -------------------------------------------------------------------------
-    # Internal helpers — provided, do not modify
+    # Internal helpers
     # -------------------------------------------------------------------------
 
     def _match_len(self, a: List[int], b: List[int]) -> int:
