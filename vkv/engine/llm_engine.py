@@ -114,6 +114,7 @@ class LLMEngine:
         """
         seq = Sequence(token_ids, self.block_manager, sampling_params)
         self.scheduler.add(seq)
+        self.monitor.on_request_arrival(seq.seq_id, len(token_ids))
         return seq.seq_id
 
     def step(self) -> List[RequestOutput]:
@@ -155,6 +156,8 @@ class LLMEngine:
                             kv[layer, 0, :, token_pos, :],
                             kv[layer, 1, :, token_pos, :],
                         )
+            for seq in output.scheduled_seqs:
+                self.monitor.on_first_token(seq.seq_id)
             self.monitor.on_step(self.block_manager, self.scheduler)
             return []
         else:
@@ -165,6 +168,8 @@ class LLMEngine:
 
             finished_seqs = self.scheduler.postprocess(output.scheduled_seqs, token_ids)
             for seq in finished_seqs:
+                num_output = len(seq.token_ids) - seq.num_prompt_tokens
+                self.monitor.on_request_finish(seq.seq_id, num_output)
                 self.outputs[seq.seq_id] = RequestOutput(
                     seq_id=seq.seq_id,
                     prompt_token_ids=seq.token_ids[:seq.num_prompt_tokens],
