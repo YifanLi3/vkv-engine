@@ -96,7 +96,7 @@ class TestPart2:
         # Manually build tree (bypassing insert for isolated testing)
         bid = block_manager.allocate(1)[0]
         node = RadixNode(token_ids=[1, 2, 3, 4], block_ids=[bid], parent=cache.root)
-        cache.root.children[1] = node
+        cache.root.children[(1, 2, 3, 4)] = node
 
         blocks, count = cache.match_prefix([1, 2, 3, 4])
         assert blocks == [bid]
@@ -107,7 +107,7 @@ class TestPart2:
         from vkv.engine.prefix_cache import RadixNode
         bid = block_manager.allocate(1)[0]
         node = RadixNode(token_ids=[1, 2, 3, 4], block_ids=[bid], parent=cache.root)
-        cache.root.children[1] = node
+        cache.root.children[(1, 2, 3, 4)] = node
 
         blocks, count = cache.match_prefix([1, 2, 3, 4, 5, 6, 7, 8])
         assert blocks == [bid]
@@ -117,7 +117,7 @@ class TestPart2:
         from vkv.engine.prefix_cache import RadixNode
         bid = block_manager.allocate(1)[0]
         node = RadixNode(token_ids=[1, 2, 3, 4], block_ids=[bid], parent=cache.root)
-        cache.root.children[1] = node
+        cache.root.children[(1, 2, 3, 4)] = node
 
         blocks, count = cache.match_prefix([9, 8, 7, 6])
         assert blocks == []
@@ -129,8 +129,8 @@ class TestPart2:
         b1, b2 = block_manager.allocate(2)
         n1 = RadixNode(token_ids=[1, 2, 3, 4], block_ids=[b1], parent=cache.root)
         n2 = RadixNode(token_ids=[5, 6, 7, 8], block_ids=[b2], parent=n1)
-        cache.root.children[1] = n1
-        n1.children[5] = n2
+        cache.root.children[(1, 2, 3, 4)] = n1
+        n1.children[(5, 6, 7, 8)] = n2
 
         blocks, count = cache.match_prefix([1, 2, 3, 4, 5, 6, 7, 8, 9])
         assert blocks == [b1, b2]
@@ -140,7 +140,7 @@ class TestPart2:
         from vkv.engine.prefix_cache import RadixNode
         bid = block_manager.allocate(1)[0]
         node = RadixNode(token_ids=[1, 2, 3, 4], block_ids=[bid], parent=cache.root)
-        cache.root.children[1] = node
+        cache.root.children[(1, 2, 3, 4)] = node
 
         cache.match_prefix([1, 2, 3, 4])   # hit
         cache.match_prefix([9, 8, 7, 6])   # miss
@@ -154,8 +154,8 @@ class TestPart2:
         b1, b2 = block_manager.allocate(2)
         n1 = RadixNode(token_ids=[1, 2, 3, 4], block_ids=[b1], parent=cache.root)
         n2 = RadixNode(token_ids=[5, 6, 7, 8], block_ids=[b2], parent=n1)
-        cache.root.children[1] = n1
-        n1.children[5] = n2
+        cache.root.children[(1, 2, 3, 4)] = n1
+        n1.children[(5, 6, 7, 8)] = n2
 
         _, count = cache.match_prefix([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
         assert count % cache.block_size == 0
@@ -295,7 +295,7 @@ class TestPart4:
         bid = block_manager.allocate(1)[0]
         node = RadixNode(token_ids=[1, 2, 3, 4], block_ids=[bid], parent=cache.root)
         node.ref_count = 1  # marked as in use
-        cache.root.children[1] = node
+        cache.root.children[(1, 2, 3, 4)] = node
 
         freed = cache.evict(1)
         assert freed == 0

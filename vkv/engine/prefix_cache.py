@@ -55,7 +55,7 @@ class RadixNode:
     ):
         self.token_ids: List[int] = token_ids if token_ids is not None else []
         self.block_ids: List[int] = block_ids if block_ids is not None else []
-        self.children: Dict[int, 'RadixNode'] = {}
+        self.children: Dict[Tuple[int, ...], 'RadixNode'] = {}
         self.parent: Optional['RadixNode'] = parent
         self.last_access: float = time.monotonic()
         self.ref_count: int = 0
@@ -321,7 +321,65 @@ class PrefixCache:
         common prefix from the original child (no extra inc_ref needed for
         those). Only the newly inserted leaf's blocks need inc_ref.
         """
-        raise NotImplementedError
+        num_complete = min(len(token_ids) // self.block_size, len(block_ids))
+        if num_complete == 0:
+            return
+
+        tokens_to_cache = token_ids[:num_complete * self.block_size]
+        blocks_to_cache = block_ids[:num_complete]
+
+        node = self.root
+        cursor = 0
+        block_cursor = 0
+
+        while cursor < len(tokens_to_cache):
+            key = tokens_to_cache[cursor]
+            child = node.children.get(key)
+
+            # A: key cannot match, new tokens, insert as new node
+            if child is None:
+                self._attach_leaf(
+                    node,
+                    tokens_to_cache[cursor:],
+                    blocks_to_cache[block_cursor:],
+                )
+                return
+
+            common_raw = self._match_len(child.token_ids, tokens_to_cache[cursor:])
+            common_blocks = common_raw // self.block_size
+            common_tokens = common_blocks * self.block_size
+
+            # B: key can match, but diverge inside the block
+            if common_tokens == 0:
+                return
+
+            # C: cache hit, move to child node
+            if common_tokens == child.num_tokens:
+                cursor += child.num_tokens
+                block_cursor += child.num_blocks
+                child.last_access = time.monotonic()
+                node = child
+                continue
+
+            # D: Split original node to two nodes
+            mid = RadixNode(
+                token_ids=child.token_ids[:common_tokens],
+                block_ids=child.block_ids[:common_blocks],
+                parent=node,
+            )
+            child.token_ids = child.token_ids[common_tokens:]
+            child.block_ids = child.block_ids[common_blocks:]
+            child.parent = mid
+
+            mid.children[child.token_ids[0]] = child
+            node.children[key] = mid
+            self._attach_leaf(
+                mid,
+                tokens_to_cache[cursor + common_tokens:],
+                blocks_to_cache[block_cursor + common_blocks:],
+            )
+            return
+
 
     # -------------------------------------------------------------------------
     # Part 4: evict
@@ -424,6 +482,22 @@ class PrefixCache:
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
+    def _attach_leaf(
+        self,
+        parent: RadixNode,
+        token_ids: List[int],
+        block_ids: List[int],
+    ) -> None:
+        if not token_ids:
+            return
+        leaf = RadixNode(
+            token_ids=token_ids,
+            block_ids=block_ids,
+            parent=parent
+        )
+        parent.children[token_ids[0]] = leaf
+        for bid in leaf.block_ids:
+            self.block_manager.inc_ref(bid)
 
     def _match_len(self, a: List[int], b: List[int]) -> int:
         """Return the length of the common prefix shared by lists a and b."""
