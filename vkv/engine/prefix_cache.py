@@ -33,14 +33,17 @@ class RadixNode:
     Example tree (block_size=2, sequences [1,2,3,4] and [1,2,5,6]):
 
         root  (tokens=[], blocks=[])
-          └─ key=1 → node(tokens=[1,2], blocks=[3])
-                        ├─ key=3 → node(tokens=[3,4], blocks=[7])
-                        └─ key=5 → node(tokens=[5,6], blocks=[9])
+        └─ key=(1,2) → node(tokens=[1,2], blocks=[3])
+                        ├─ key=(3,4) → node(tokens=[3,4], blocks=[7])
+                        └─ key=(5,6) → node(tokens=[5,6], blocks=[9])
 
     Attributes:
         token_ids:   The token segment this node covers (relative to parent)
         block_ids:   Physical block IDs holding KV for token_ids
-        children:    Dict[first_token → child RadixNode]
+        children:    Dict[first block's token tuple → child RadixNode]
+                     Keyed by the whole first block, not just the first token,
+                     because a block is the smallest shareable unit: two nodes
+                     may only share a path if their entire first block matches.
         parent:      Reference to parent node (None for root)
         last_access: Monotonic timestamp — updated on every cache hit (for LRU)
         ref_count:   How many active sequences are currently using this node's
@@ -157,34 +160,13 @@ class PrefixCache:
             Query:  [1,2,3,4,5,6]
             → returns ([3, 7], 4)
 
-        Algorithm:
-            matched_blocks = []
-            cursor = 0  # index into token_ids
-            node = self.root
-
-            loop:
-                if cursor >= len(token_ids): break
-                key = token_ids[cursor]
-                if key not in node.children: break
-                child = node.children[key]
-                common = _match_len(child.token_ids, token_ids[cursor:])
-                if common == child.num_tokens:          # full node matched
-                    matched_blocks += child.block_ids
-                    cursor += child.num_tokens
-                    child.last_access = time.monotonic()
-                    node = child
-                else:                                   # partial match — stop
-                    break
-
-            update _hits / _misses
-            return matched_blocks, cursor
         """
         matched_blocks = []
         cursor = 0  # index into token_ids
         node = self.root
 
-        while cursor < len(token_ids):
-            key = token_ids[cursor]
+        while cursor + self.block_size <= len(token_ids):
+            key = self._block_key(token_ids, cursor)
             child = node.children.get(key)
 
             if child is None:
@@ -233,84 +215,6 @@ class PrefixCache:
             tokens_to_cache = token_ids[:num_complete * block_size]
             blocks_to_cache = block_ids[:num_complete]
 
-        Algorithm (radix tree insertion with node splitting):
-            node = root; cursor = 0; block_cursor = 0
-
-            while cursor < len(tokens_to_cache):
-                key = tokens_to_cache[cursor]
-
-                if key NOT in node.children:
-                    # No existing child — create a new leaf and stop
-                    new_node = RadixNode(
-                        token_ids=tokens_to_cache[cursor:],
-                        block_ids=blocks_to_cache[block_cursor:],
-                        parent=node,
-                    )
-                    node.children[key] = new_node
-                    # Increment ref on each block (shared ownership)
-                    for bid in new_node.block_ids:
-                        block_manager.inc_ref(bid)
-                    break
-
-                child = node.children[key]
-                common_raw = _match_len(child.token_ids, tokens_to_cache[cursor:])
-
-                # IMPORTANT: a block is the smallest cacheable unit. Even if
-                # common_raw (token-level match) isn't a multiple of
-                # block_size, we can only actually SHARE whole blocks — a
-                # block is physically identical only if every token inside
-                # it matches. So round the match length DOWN to the nearest
-                # block boundary before doing anything else:
-                #
-                #   common_blocks = common_raw // block_size
-                #   common = common_blocks * block_size   # use this, not common_raw
-                #
-                # Example (block_size=2): child=[1,2,3,4], new=[1,2,3,5]
-                #   common_raw = 3  (tokens 1,2,3 match)
-                #   common_blocks = 3 // 2 = 1
-                #   common = 1 * 2 = 2   ← only block [1,2] is truly shared;
-                #                          block [3,4] vs [3,5] differ, so
-                #                          token 3 alone does NOT count.
-                common_blocks = common_raw // block_size
-                common = common_blocks * block_size
-
-                if common == child.num_tokens:
-                    # Full match — descend into child and continue
-                    cursor += child.num_tokens
-                    block_cursor += child.num_blocks
-                    node = child
-
-                elif common == 0:
-                    # No block-aligned overlap at all (e.g. common_raw < block_size).
-                    # Nothing can be shared here — stop without modifying the tree.
-                    break
-
-                else:
-                    # Partial match (0 < common < child.num_tokens) — SPLIT
-                    # the existing child at the block-aligned boundary `common`.
-                    #
-                    # Before split (common=2, block_size=2):
-                    #   node → child([1,2,3,4], blocks=[A,B])
-                    #
-                    # After split:
-                    #   node → mid([1,2], blocks=[A])
-                    #               ├─ suffix([3,4], blocks=[B])   ← old child tail
-                    #               └─ new([5,6], blocks=[C])      ← new tokens
-                    #
-                    # Steps (all slicing uses the block-aligned `common`,
-                    # never common_raw):
-                    # 1. Create mid_node with child.token_ids[:common] and child.block_ids[:common_blocks]
-                    # 2. Create suffix_node = old child trimmed to
-                    #    token_ids[common:] and block_ids[common_blocks:]
-                    # 3. mid_node.children[suffix_first_token] = suffix_node
-                    # 4. node.children[key] = mid_node
-                    # 5. Create new leaf under mid_node for the remaining
-                    #    tokens_to_cache[cursor+common:] (this may still need
-                    #    its own alignment check if it's shorter than block_size)
-                    # 6. Increment ref on new leaf's blocks
-                    # (mid and suffix already share the same physical blocks — no extra inc_ref needed)
-                    break  # TODO: implement splitting
-
         Hint: Always slice both token_ids and block_ids using the SAME
         block-aligned `common` / `common_blocks` pair. Never slice token_ids
         with the raw (unaligned) match length — that desyncs a node's
@@ -333,7 +237,7 @@ class PrefixCache:
         block_cursor = 0
 
         while cursor < len(tokens_to_cache):
-            key = tokens_to_cache[cursor]
+            key = self._block_key(tokens_to_cache, cursor)
             child = node.children.get(key)
 
             # A: key cannot match, new tokens, insert as new node
@@ -349,11 +253,7 @@ class PrefixCache:
             common_blocks = common_raw // self.block_size
             common_tokens = common_blocks * self.block_size
 
-            # B: key can match, but diverge inside the block
-            if common_tokens == 0:
-                return
-
-            # C: cache hit, move to child node
+            # B: cache hit, move to child node
             if common_tokens == child.num_tokens:
                 cursor += child.num_tokens
                 block_cursor += child.num_blocks
@@ -361,7 +261,7 @@ class PrefixCache:
                 node = child
                 continue
 
-            # D: Split original node to two nodes
+            # C: Split original node to two nodes
             mid = RadixNode(
                 token_ids=child.token_ids[:common_tokens],
                 block_ids=child.block_ids[:common_blocks],
@@ -371,14 +271,11 @@ class PrefixCache:
             child.block_ids = child.block_ids[common_blocks:]
             child.parent = mid
 
-            mid.children[child.token_ids[0]] = child
+            mid.children[self._block_key(child.token_ids)] = child
             node.children[key] = mid
-            self._attach_leaf(
-                mid,
-                tokens_to_cache[cursor + common_tokens:],
-                blocks_to_cache[block_cursor + common_blocks:],
-            )
-            return
+            node = mid
+            cursor += common_tokens
+            block_cursor += common_blocks
 
 
     # -------------------------------------------------------------------------
@@ -495,9 +392,13 @@ class PrefixCache:
             block_ids=block_ids,
             parent=parent
         )
-        parent.children[token_ids[0]] = leaf
+        parent.children[self._block_key(token_ids)] = leaf
         for bid in leaf.block_ids:
             self.block_manager.inc_ref(bid)
+
+    def _block_key(self, token_ids: List[int], start: int = 0) -> Tuple[int, ...]:
+        """Children key: the full first block of tokens starting at `start`."""
+        return tuple(token_ids[start:start + self.block_size])
 
     def _match_len(self, a: List[int], b: List[int]) -> int:
         """Return the length of the common prefix shared by lists a and b."""
