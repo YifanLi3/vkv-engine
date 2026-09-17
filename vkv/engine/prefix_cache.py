@@ -356,7 +356,10 @@ class PrefixCache:
             3. block_manager.free([block_id])   # decrement ref on the original
             4. return new_block_id
         """
-        raise NotImplementedError
+        new_block_id = self.block_manager.allocate(1)[0]
+        self.block_manager.copy_block(block_id, new_block_id)
+        self.block_manager.free([block_id])
+        return new_block_id
 
     # -------------------------------------------------------------------------
     # Part 6: Statistics
