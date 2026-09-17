@@ -299,19 +299,38 @@ class PrefixCache:
             Number of blocks actually freed (may be < num_blocks if cache is
             too small or all remaining blocks are in use).
 
-        Algorithm:
-            freed = 0
-            while freed < num_blocks:
-                leaves = all leaf nodes with ref_count == 0 (use _collect_leaves)
-                if no leaves: break
-                victim = leaf with smallest last_access (oldest)
-                block_manager.free(victim.block_ids)
-                freed += victim.num_blocks
-                del victim.parent.children[victim.token_ids[0]]
-                # parent might now be a leaf — loop will catch it next iteration
-            return freed
         """
-        raise NotImplementedError
+        freed = 0
+
+        while freed < num_blocks:
+
+            # Find all leaves
+            leaves: List[RadixNode] = []
+            self._collect_leaves(self.root, leaves)
+
+            # 
+            candidates = [
+                leaf for leaf in leaves if leaf.ref_count == 0
+            ]
+
+            #
+            if not candidates:
+                break
+
+            victim = min(
+                candidates,
+                key=lambda leaf: leaf.last_access,
+            )
+
+            self.block_manager.free(victim.block_ids)
+            freed += victim.num_blocks
+
+            parent = victim.parent
+            key = self._block_key(victim.token_ids)
+            del parent.children[key]
+
+        return freed
+
 
     # -------------------------------------------------------------------------
     # Part 5: Copy-on-Write

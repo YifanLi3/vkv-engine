@@ -272,6 +272,7 @@ class TestPart4:
     def test_evict_single_leaf(self, cache, block_manager):
         bids = block_manager.allocate(2)
         cache.insert([1, 2, 3, 4, 5, 6, 7, 8], bids)
+        block_manager.free(bids)  # sequence finished; cache is sole owner
 
         before = block_manager.gpu_allocator.num_used
         freed = cache.evict(1)
@@ -283,6 +284,7 @@ class TestPart4:
     def test_evict_returns_freed_count(self, cache, block_manager):
         bids = block_manager.allocate(2)
         cache.insert([1, 2, 3, 4, 5, 6, 7, 8], bids)
+        block_manager.free(bids)  # sequence finished; cache is sole owner
         freed = cache.evict(2)
         assert freed == 2
 
@@ -310,6 +312,8 @@ class TestPart4:
         cache.insert([1, 2, 3, 4], bids_a)
         time.sleep(0.01)  # ensure different timestamps
         cache.insert([5, 6, 7, 8], bids_b)
+        block_manager.free(bids_a)
+        block_manager.free(bids_b)
 
         # Evict 1 block — should be the older one (bids_a)
         freed = cache.evict(1)
@@ -322,6 +326,7 @@ class TestPart4:
     def test_evict_cleans_up_node_from_parent(self, cache, block_manager):
         bids = block_manager.allocate(1)
         cache.insert([1, 2, 3, 4], bids)
+        block_manager.free(bids)  # sequence finished; cache is sole owner
 
         cache.evict(1)
 
@@ -334,6 +339,7 @@ class TestPart4:
         """Evicting more blocks than cached should not crash."""
         bids = block_manager.allocate(1)
         cache.insert([1, 2, 3, 4], bids)
+        block_manager.free(bids)  # sequence finished; cache is sole owner
         freed = cache.evict(100)
         assert freed == 1  # only 1 block was cached
 
